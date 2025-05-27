@@ -32,7 +32,7 @@ if uploaded_file:
 
     # --- Downscale if needed ---
     if quality_choice == "Normal (recommended)":
-        max_dim = 1200  # You can adjust this
+        max_dim = 800  # Lowered for Streamlit Cloud reliability
         scale = min(max_dim / h, max_dim / w, 1.0)
         if scale < 1.0:
             new_size = (int(w * scale), int(h * scale))
@@ -46,7 +46,7 @@ if uploaded_file:
     scale_canvas = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=5,
-        background_image=image,  # <-- Use PIL Image, not NumPy array
+        background_image=image,  # Use PIL Image for best compatibility
         update_streamlit=True,
         height=h,
         width=w,
@@ -59,7 +59,6 @@ if uploaded_file:
 
     if scale_canvas.json_data and len(scale_canvas.json_data["objects"]) > 0:
         obj = scale_canvas.json_data["objects"][-1]
-        # For a line, use x1, y1, x2, y2
         if obj["type"] == "line":
             x0, y0 = obj["x1"], obj["y1"]
             x1, y1 = obj["x2"], obj["y2"]
@@ -76,7 +75,7 @@ if uploaded_file:
         canvas_result = st_canvas(
             fill_color="rgba(0, 255, 0, 0.2)",
             stroke_width=3,
-            background_image=image,  # <-- Use PIL Image, not NumPy array
+            background_image=image,  # Use PIL Image for best compatibility
             update_streamlit=True,
             height=h,
             width=w,
