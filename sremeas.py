@@ -46,7 +46,7 @@ if uploaded_file:
     scale_canvas = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=5,
-        background_image=image,  # Use PIL Image here
+        background_image=image,  # Use PIL Image for compatibility
         update_streamlit=True,
         height=h,
         width=w,
@@ -76,7 +76,7 @@ if uploaded_file:
         canvas_result = st_canvas(
             fill_color="rgba(0, 255, 0, 0.2)",
             stroke_width=3,
-            background_image=image,  # Use PIL Image here
+            background_image=image,  # Use PIL Image for compatibility
             update_streamlit=True,
             height=h,
             width=w,
