@@ -15,42 +15,38 @@ if uploaded_file:
     image_np = np.array(image)
     h, w = image_np.shape[:2]
 
-    max_dim = max(h, w)
-    if max_dim > 2000:
+    # --- Detect large image and prompt for quality ---
+    large_image = (h * w > 2000 * 2000)  # Example threshold
+    if large_image:
         st.warning(
-            "⚠️ High-resolution image detected. Processing may be slow. "
-            "You can choose 'Normal Mode' for faster performance or 'High Accuracy Mode' for best results."
+            f"Your image is very large ({w}x{h}). High quality mode may be slow. "
+            "Choose 'Normal' to process a downscaled version."
         )
-
-    mode = st.radio(
-        "Choose processing mode:",
-        ["Normal Mode (fast, recommended for large images)", "High Accuracy Mode (slow, full resolution)"],
-        index=0
-    )
-
-    # Downscale for normal mode
-    if mode.startswith("Normal"):
-        target_width = 1000
-        if w > target_width:
-            scale = target_width / w
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            image_disp = image.resize((new_w, new_h))
-            image_disp_np = np.array(image_disp)
-        else:
-            image_disp = image
-            image_disp_np = image_np
-        h, w = image_disp_np.shape[:2]
+        quality_choice = st.radio(
+            "Select image processing quality:",
+            ["Normal (recommended)", "High Quality (slow)"],
+            index=0
+        )
     else:
-        image_disp = image
-        image_disp_np = image_np
+        quality_choice = "High Quality (slow)"
+
+    # --- Downscale if needed ---
+    if quality_choice == "Normal (recommended)":
+        max_dim = 1200  # You can adjust this
+        scale = min(max_dim / h, max_dim / w, 1.0)
+        if scale < 1.0:
+            new_size = (int(w * scale), int(h * scale))
+            image = image.resize(new_size, Image.LANCZOS)
+            image_np = np.array(image)
+            h, w = image_np.shape[:2]
+            st.info(f"Image downscaled to {w}x{h} for faster processing.")
 
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
     scale_canvas = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=5,
-        background_image=image_disp,
+        background_image=image,
         update_streamlit=True,
         height=h,
         width=w,
@@ -63,6 +59,7 @@ if uploaded_file:
 
     if scale_canvas.json_data and len(scale_canvas.json_data["objects"]) > 0:
         obj = scale_canvas.json_data["objects"][-1]
+        # For a line, use x1, y1, x2, y2
         if obj["type"] == "line":
             x0, y0 = obj["x1"], obj["y1"]
             x1, y1 = obj["x2"], obj["y2"]
@@ -79,7 +76,7 @@ if uploaded_file:
         canvas_result = st_canvas(
             fill_color="rgba(0, 255, 0, 0.2)",
             stroke_width=3,
-            background_image=image_disp,
+            background_image=image,
             update_streamlit=True,
             height=h,
             width=w,
@@ -90,75 +87,90 @@ if uploaded_file:
         if "samples" not in st.session_state:
             st.session_state.samples = []
 
-        # Always rebuild samples from current shapes
-        if canvas_result.json_data and "objects" in canvas_result.json_data:
-            st.session_state.samples = []
-            for i, obj in enumerate(canvas_result.json_data["objects"], start=1):
-                shape_mask = np.zeros((h, w), dtype=np.uint8)
-                if obj["type"] == "circle":
-                    cx, cy = obj["left"] + obj["radius"], obj["top"] + obj["radius"]
-                    radius = obj["radius"]
-                    cv2.circle(shape_mask, (int(cx), int(cy)), int(radius), 255, -1)
-                elif obj["type"] == "rect":
-                    x0, y0 = int(obj["left"]), int(obj["top"])
-                    x1, y1 = x0 + int(obj["width"]), y0 + int(obj["height"])
-                    cv2.rectangle(shape_mask, (x0, y0), (x1, y1), 255, -1)
-                elif obj["type"] == "path":
-                    shape_mask = cv2.cvtColor(canvas_result.image_data.astype(np.uint8), cv2.COLOR_RGBA2GRAY)
-                    shape_mask = cv2.threshold(shape_mask, 10, 255, cv2.THRESH_BINARY)[1]
+        if canvas_result.image_data is not None and np.any(canvas_result.image_data != 255):
+            mask = cv2.cvtColor(canvas_result.image_data.astype(np.uint8), cv2.COLOR_RGBA2GRAY)
+            mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)[1]
 
-                hsv = cv2.cvtColor(image_disp_np, cv2.COLOR_RGB2HSV)
-                green_lower = np.array([20, 40, 40])
-                green_upper = np.array([90, 255, 255])
-                green_mask = cv2.inRange(hsv, green_lower, green_upper)
-                yellow_lower = np.array([15, 80, 80])
-                yellow_upper = np.array([40, 255, 255])
-                yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
-                lesion_lower = np.array([0, 0, 0])
-                lesion_upper = np.array([40, 255, 120])
-                lesion_mask = cv2.inRange(hsv, lesion_lower, lesion_upper)
+            hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
 
-                healthy_mask = cv2.bitwise_or(green_mask, yellow_mask)
-                total_mango_mask = cv2.bitwise_or(healthy_mask, lesion_mask)
-                total_mango_mask = cv2.bitwise_and(total_mango_mask, shape_mask)
-                lesion_mask = cv2.bitwise_and(lesion_mask, shape_mask)
+            # Mask for green/yellow mango surface (tune these ranges as needed)
+            green_lower = np.array([20, 40, 40])
+            green_upper = np.array([90, 255, 255])
+            green_mask = cv2.inRange(hsv, green_lower, green_upper)
 
-                mango_area_px = np.sum(total_mango_mask == 255)
-                lesion_area_px = np.sum(lesion_mask == 255)
-                mango_area_mm2 = mango_area_px * (mm_per_px ** 2)
-                lesion_area_mm2 = lesion_area_px * (mm_per_px ** 2)
-                lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 else 0
+            yellow_lower = np.array([15, 80, 80])
+            yellow_upper = np.array([40, 255, 255])
+            yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
 
-                result = {
-                    "Sample #": i,
-                    "Total Area (mm²)": round(mango_area_mm2, 2),
-                    "Lesion Area (mm²)": round(lesion_area_mm2, 2),
-                    "Lesion %": round(lesion_percent, 2)
-                }
+            # Mask for black/brown lesions
+            lesion_lower = np.array([0, 0, 0])
+            lesion_upper = np.array([40, 255, 120])
+            lesion_mask = cv2.inRange(hsv, lesion_lower, lesion_upper)
+
+            healthy_mask = cv2.bitwise_or(green_mask, yellow_mask)
+            total_mango_mask = cv2.bitwise_or(healthy_mask, lesion_mask)
+            total_mango_mask = cv2.bitwise_and(total_mango_mask, mask)
+
+            lesion_mask = cv2.bitwise_and(lesion_mask, mask)
+
+            mango_area_px = np.sum(total_mango_mask == 255)
+            lesion_area_px = np.sum(lesion_mask == 255)
+
+            mango_area_mm2 = mango_area_px * (mm_per_px ** 2)
+            lesion_area_mm2 = lesion_area_px * (mm_per_px ** 2)
+            lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 else 0
+
+            st.markdown("### 🟩 Selected Mango & Lesions")
+            col1, col2 = st.columns(2)
+            col1.image(total_mango_mask, caption="Total Mango Area (Green/Yellow + Lesions)", use_column_width=True)
+            col2.image(lesion_mask, caption="Lesion Area (Black/Brown)", use_column_width=True)
+
+            result = {
+                "Sample #": len(st.session_state.samples) + 1,
+                "Total Area (mm²)": round(mango_area_mm2, 2),
+                "Lesion Area (mm²)": round(lesion_area_mm2, 2),
+                "Lesion %": round(lesion_percent, 2)
+            }
+            st.markdown("### 📊 Current Sample Result")
+            st.dataframe(pd.DataFrame([result]))
+
+            if st.button("Add this mango as a sample"):
                 st.session_state.samples.append(result)
+                st.success(f"Sample {result['Sample #']} added! Draw the next mango.")
 
         if st.session_state.samples:
             st.markdown("### 🥭 All Mango Samples")
             all_samples_df = pd.DataFrame(st.session_state.samples)
             st.dataframe(all_samples_df)
 
-            csv_file_name = st.text_input("Enter CSV file name (without .csv):", value="mango_lesion_samples")
+            # Add delete buttons for each row
+            for idx, row in all_samples_df.iterrows():
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    st.write(row.to_dict())
+                with col2:
+                    if st.button("🗑️ Delete", key=f"delete_{idx}"):
+                        st.session_state.samples.pop(idx)
+                        st.experimental_rerun()
+
+            # --- CSV export with custom filename ---
+            csv_filename = st.text_input(
+                "Enter filename for CSV export (without .csv):",
+                value="mango_lesion_samples"
+            )
             csv = all_samples_df.to_csv(index=False).encode()
             st.download_button(
                 "📥 Download All Samples as CSV",
                 csv,
-                f"{csv_file_name}.csv",
+                f"{csv_filename}.csv",
                 "text/csv"
             )
 
-# Footer
-st.markdown(
-    """
-    <hr>
-    <div style='text-align: center; font-size: 15px;'>
-        Plant Pathology Laboratory, Institute of Plant Breeding, UPLB<br>
-        Contact: <a href="mailto:jsmendoza5@up.edu.ph">jsmendoza5@up.edu.ph</a>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+# --- Footer ---
+st.markdown("""
+---
+<center>
+Plant Pathology Laboratory, Institute of Plant Breeding, CAFS, UPLB;  
+Contact: <a href="mailto:jsmendoza5@up.edu.ph">jsmendoza5@up.edu.ph</a>
+</center>
+""", unsafe_allow_html=True)
