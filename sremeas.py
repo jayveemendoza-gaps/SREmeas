@@ -11,7 +11,7 @@ st.title("🍋 Mango SER meas")
 uploaded_file = st.file_uploader("Upload an image of mangoes (top view)", type=["png", "jpg", "jpeg"])
 
 if uploaded_file:
-    image = Image.open(uploaded_file).convert("RGB")
+    image = Image.open(uploaded_file).convert("RGB")  # Ensure no alpha channel
     image_np = np.array(image)
     h, w = image_np.shape[:2]
 
