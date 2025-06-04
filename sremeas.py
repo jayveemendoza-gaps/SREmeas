@@ -5,6 +5,11 @@ import cv2
 import pandas as pd
 from PIL import Image
 
+# Define the process_image function at the top
+@st.cache_data
+def process_image(image_np):
+    return cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+
 st.set_page_config(layout="wide")
 st.title("🍋 Mango SER meas")
 
@@ -88,8 +93,7 @@ if uploaded_file:
 
         if canvas_result.image_data is not None and np.any(canvas_result.image_data != 255):
             mask = (canvas_result.image_data[..., 3] > 10).astype(np.uint8) * 255  # Optimized mask creation
-
-            hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+            hsv = process_image(image_np)
 
             # Mask for green/yellow mango surface (tune these ranges as needed)
             green_lower = np.array([20, 40, 40])
