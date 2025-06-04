@@ -36,7 +36,7 @@ if uploaded_file:
         scale = min(max_dim / h, max_dim / w, 1.0)
         if scale < 1.0:
             new_size = (int(w * scale), int(h * scale))
-            image = image.resize(new_size, Image.LANCZOS)
+            image = image.resize(new_size, Image.Resampling.LANCZOS)  # Updated for compatibility
             image_np = np.array(image)
             h, w = image_np.shape[:2]
             st.info(f"Image downscaled to {w}x{h} for faster processing.")
@@ -87,8 +87,7 @@ if uploaded_file:
             st.session_state.samples = []
 
         if canvas_result.image_data is not None and np.any(canvas_result.image_data != 255):
-            mask = cv2.cvtColor(canvas_result.image_data.astype(np.uint8), cv2.COLOR_RGBA2GRAY)
-            mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)[1]
+            mask = (canvas_result.image_data[..., 3] > 10).astype(np.uint8) * 255  # Optimized mask creation
 
             hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
 
