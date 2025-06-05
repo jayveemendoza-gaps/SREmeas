@@ -5,49 +5,69 @@ import cv2
 import pandas as pd
 from PIL import Image
 
-# Define the process_image function at the top
-@st.cache_data
-def process_image(image_np):
-    return cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
-
 st.set_page_config(layout="wide")
 st.title("🍋 Mango SER meas")
+
+# Cache the downscaling of large images
+@st.cache_data
+def downscale_image(image, max_dim=800):
+    """Downscale the image to a maximum dimension for faster processing."""
+    w, h = image.size
+    scale = min(max_dim / w, max_dim / h, 1.0)
+    if scale < 1.0:
+        new_size = (int(w * scale), int(h * scale))
+        return image.resize(new_size, Image.LANCZOS)
+    return image
+
+# Cache the HSV conversion
+@st.cache_data
+def convert_to_hsv(image_np):
+    """Convert the RGB image to HSV format."""
+    return cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+
+# Cache the mask creation
+@st.cache_data
+def create_masks(hsv, mask):
+    """Create masks for green/yellow mango surface and lesions."""
+    green_lower = np.array([20, 40, 40])
+    green_upper = np.array([90, 255, 255])
+    green_mask = cv2.inRange(hsv, green_lower, green_upper)
+
+    yellow_lower = np.array([15, 80, 80])
+    yellow_upper = np.array([40, 255, 255])
+    yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
+
+    lesion_lower = np.array([0, 0, 0])
+    lesion_upper = np.array([40, 255, 120])
+    lesion_mask = cv2.inRange(hsv, lesion_lower, lesion_upper)
+
+    healthy_mask = cv2.bitwise_or(green_mask, yellow_mask)
+    total_mango_mask = cv2.bitwise_or(healthy_mask, lesion_mask)
+    total_mango_mask = cv2.bitwise_and(total_mango_mask, mask)
+
+    lesion_mask = cv2.bitwise_and(lesion_mask, mask)
+
+    return total_mango_mask, lesion_mask
 
 uploaded_file = st.file_uploader("Upload an image of mangoes (top view)", type=["png", "jpg", "jpeg"])
 
 if uploaded_file:
     image = Image.open(uploaded_file).convert("RGB")  # Ensure no alpha channel
+    image = downscale_image(image)  # Use cached downscaling
     image_np = np.array(image)
     h, w = image_np.shape[:2]
 
-    # --- Detect large image and prompt for quality ---
-    large_image = (h * w > 2000 * 2000)  # Example threshold
-    if large_image:
-        st.warning(
-            f"Your image is very large ({w}x{h}). High quality mode may be slow. "
-            "Choose 'Normal' to process a downscaled version."
-        )
-        quality_choice = st.radio(
-            "Select image processing quality:",
-            ["Normal (recommended)", "High Quality (slow)"],
-            index=0
-        )
-    else:
-        quality_choice = "High Quality (slow)"
-
-    # --- Downscale if needed ---
-    if quality_choice == "Normal (recommended)":
-        max_dim = 800  # Lowered for Streamlit Cloud reliability
-        scale = min(max_dim / h, max_dim / w, 1.0)
-        if scale < 1.0:
-            new_size = (int(w * scale), int(h * scale))
-            image = image.resize(new_size, Image.Resampling.LANCZOS)  # Updated for compatibility
-            image_np = np.array(image)
-            h, w = image_np.shape[:2]
-            st.info(f"Image downscaled to {w}x{h} for faster processing.")
-
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
+
+    # Use st.session_state to manage the state of the scale length input
+    if "scale_length_mm" not in st.session_state:
+        st.session_state.scale_length_mm = 0.1  # Default value
+
+    # Use st.session_state to manage the state of the scale canvas
+    if "scale_canvas_data" not in st.session_state:
+        st.session_state.scale_canvas_data = None
+
     scale_canvas = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=5,
@@ -59,24 +79,44 @@ if uploaded_file:
         key="scale_canvas",
     )
 
-    scale_length_mm = st.number_input("Enter the real-world length of the drawn line (mm):", min_value=0.1)
-    scale_px = None
+    # Update session state with canvas data
+    if scale_canvas.json_data:
+        st.session_state.scale_canvas_data = scale_canvas.json_data
 
-    if scale_canvas.json_data and len(scale_canvas.json_data["objects"]) > 0:
-        obj = scale_canvas.json_data["objects"][-1]
+    # Use st.session_state to manage the scale length input
+    st.session_state.scale_length_mm = st.number_input(
+        "Enter the real-world length of the drawn line (mm):",
+        min_value=0.1,
+        value=st.session_state.scale_length_mm,
+    )
+
+    scale_px = None
+    if st.session_state.scale_canvas_data and len(st.session_state.scale_canvas_data["objects"]) > 0:
+        obj = st.session_state.scale_canvas_data["objects"][-1]  # Process only the latest object
         if obj["type"] == "line":
             x0, y0 = obj["x1"], obj["y1"]
             x1, y1 = obj["x2"], obj["y2"]
             scale_px = np.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
             st.info(f"Line length: {scale_px:.2f} pixels")
 
-    if scale_px and scale_length_mm > 0:
-        mm_per_px = scale_length_mm / scale_px
+    if scale_px and st.session_state.scale_length_mm > 0:
+        mm_per_px = st.session_state.scale_length_mm / scale_px
         st.success(f"Scale set: 1 pixel = {mm_per_px:.4f} mm")
 
         # --- Step 2: Mango sampling ---
         st.markdown("## 2️⃣ Draw around a mango (one at a time)")
-        drawing_mode = st.selectbox("Drawing mode", ["freedraw", "circle", "rect"], index=1)
+
+        # Use st.session_state to manage the drawing mode
+        if "drawing_mode" not in st.session_state:
+            st.session_state.drawing_mode = "circle"  # Default drawing mode
+
+        st.session_state.drawing_mode = st.selectbox(
+            "Drawing mode",
+            ["freedraw", "circle", "rect"],
+            index=["freedraw", "circle", "rect"].index(st.session_state.drawing_mode),
+            key="drawing_mode_select",
+        )
+
         canvas_result = st_canvas(
             fill_color="rgba(0, 255, 0, 0.2)",
             stroke_width=3,
@@ -84,36 +124,24 @@ if uploaded_file:
             update_streamlit=True,
             height=h,
             width=w,
-            drawing_mode=drawing_mode,
+            drawing_mode=st.session_state.drawing_mode,
             key="mango_canvas",
         )
 
         if "samples" not in st.session_state:
             st.session_state.samples = []
 
+        @st.cache_data
+        def process_canvas_data(image_data, image_np):
+            mask = cv2.cvtColor(image_data.astype(np.uint8), cv2.COLOR_RGBA2GRAY)
+            mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)[1]
+
+            hsv = convert_to_hsv(image_np)
+            total_mango_mask, lesion_mask = create_masks(hsv, mask)
+            return total_mango_mask, lesion_mask
+
         if canvas_result.image_data is not None and np.any(canvas_result.image_data != 255):
-            mask = (canvas_result.image_data[..., 3] > 10).astype(np.uint8) * 255  # Optimized mask creation
-            hsv = process_image(image_np)
-
-            # Mask for green/yellow mango surface (tune these ranges as needed)
-            green_lower = np.array([20, 40, 40])
-            green_upper = np.array([90, 255, 255])
-            green_mask = cv2.inRange(hsv, green_lower, green_upper)
-
-            yellow_lower = np.array([15, 80, 80])
-            yellow_upper = np.array([40, 255, 255])
-            yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
-
-            # Mask for black/brown lesions
-            lesion_lower = np.array([0, 0, 0])
-            lesion_upper = np.array([40, 255, 120])
-            lesion_mask = cv2.inRange(hsv, lesion_lower, lesion_upper)
-
-            healthy_mask = cv2.bitwise_or(green_mask, yellow_mask)
-            total_mango_mask = cv2.bitwise_or(healthy_mask, lesion_mask)
-            total_mango_mask = cv2.bitwise_and(total_mango_mask, mask)
-
-            lesion_mask = cv2.bitwise_and(lesion_mask, mask)
+            total_mango_mask, lesion_mask = process_canvas_data(canvas_result.image_data, image_np)
 
             mango_area_px = np.sum(total_mango_mask == 255)
             lesion_area_px = np.sum(lesion_mask == 255)
@@ -124,7 +152,8 @@ if uploaded_file:
 
             st.markdown("### 🟩 Selected Mango & Lesions")
             col1, col2 = st.columns(2)
-            col1.image(total_mango_mask, caption="Total Mango Area (Green/Yellow + Lesions)", use_column_width=True)
+            resized_mask = cv2.resize(total_mango_mask, (w // 2, h // 2), interpolation=cv2.INTER_NEAREST)
+            col1.image(resized_mask, caption="Total Mango Area (Green/Yellow + Lesions)", use_column_width=True)
             col2.image(lesion_mask, caption="Lesion Area (Black/Brown)", use_column_width=True)
 
             result = {
@@ -140,27 +169,19 @@ if uploaded_file:
                 st.session_state.samples.append(result)
                 st.success(f"Sample {result['Sample #']} added! Draw the next mango.")
 
-        if st.session_state.samples:
-            st.markdown("### 🥭 All Mango Samples")
-            all_samples_df = pd.DataFrame(st.session_state.samples)
-            st.dataframe(all_samples_df)
+        if "all_samples_df" not in st.session_state:
+            st.session_state.all_samples_df = pd.DataFrame()
 
-            # Add delete buttons for each row
-            for idx, row in all_samples_df.iterrows():
-                col1, col2 = st.columns([8, 1])
-                with col1:
-                    st.write(row.to_dict())
-                with col2:
-                    if st.button("🗑️ Delete", key=f"delete_{idx}"):
-                        st.session_state.samples.pop(idx)
-                        st.experimental_rerun()
+        if st.session_state.samples:
+            st.session_state.all_samples_df = pd.DataFrame(st.session_state.samples)
+            st.dataframe(st.session_state.all_samples_df)
 
             # --- CSV export with custom filename ---
             csv_filename = st.text_input(
                 "Enter filename for CSV export (without .csv):",
                 value="mango_lesion_samples"
             )
-            csv = all_samples_df.to_csv(index=False).encode()
+            csv = st.session_state.all_samples_df.to_csv(index=False).encode()
             st.download_button(
                 "📥 Download All Samples as CSV",
                 csv,
