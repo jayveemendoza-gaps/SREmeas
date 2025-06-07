@@ -53,7 +53,7 @@ uploaded_file = st.file_uploader("Upload an image of mangoes (top view)", type=[
 
 if uploaded_file:
     image = Image.open(uploaded_file).convert("RGB")  # Ensure no alpha channel
-    image = downscale_image(image)  # Use cached downscaling
+    image = downscale_image(image)  # Downscale immediately after upload
     image_np = np.array(image)
     h, w = image_np.shape[:2]
 
