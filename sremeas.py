@@ -32,7 +32,7 @@ if uploaded_file:
 
     # --- Downscale if needed ---
     if quality_choice == "Normal (recommended)":
-        max_dim = 800  # Lowered for Streamlit Cloud reliability
+        max_dim = 800  # Reduce further for faster processing
         scale = min(max_dim / h, max_dim / w, 1.0)
         if scale < 1.0:
             new_size = (int(w * scale), int(h * scale))
@@ -43,18 +43,31 @@ if uploaded_file:
 
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
+    # Resize the image while maintaining the aspect ratio
+    aspect_ratio = w / h
+    if aspect_ratio > 1:  # Wider than tall
+        new_width = 800
+        new_height = int(800 / aspect_ratio)
+    else:  # Taller than wide
+        new_height = 800
+        new_width = int(800 * aspect_ratio)
+
     scale_canvas = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=5,
-        background_image=image,  # Use PIL Image for best compatibility
+        background_image=image.resize((new_width, new_height), Image.LANCZOS),  # Maintain aspect ratio
         update_streamlit=True,
-        height=h,
-        width=w,
+        height=new_height,  # Adjust height
+        width=new_width,    # Adjust width
         drawing_mode="line",
         key="scale_canvas",
     )
 
-    scale_length_mm = st.number_input("Enter the real-world length of the drawn line (mm):", min_value=0.1)
+    scale_length_mm = st.number_input(
+        "Enter the real-world length of the drawn line (mm):",
+        min_value=0.1,
+        value=10.0  # Set default value to 10 mm
+    )
     scale_px = None
 
     if scale_canvas.json_data and len(scale_canvas.json_data["objects"]) > 0:
@@ -106,7 +119,8 @@ if uploaded_file:
             lesion_upper = np.array([40, 255, 120])
             lesion_mask = cv2.inRange(hsv, lesion_lower, lesion_upper)
 
-            healthy_mask = cv2.bitwise_or(green_mask, yellow_mask)
+            healthy_mask = cv2.inRange(hsv, np.array([15, 40, 40]), np.array([90, 255, 255]))
+            lesion_mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([40, 255, 120]))
             total_mango_mask = cv2.bitwise_or(healthy_mask, lesion_mask)
             total_mango_mask = cv2.bitwise_and(total_mango_mask, mask)
 
