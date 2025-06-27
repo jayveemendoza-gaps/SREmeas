@@ -3,7 +3,7 @@ from streamlit_drawable_canvas import st_canvas
 import numpy as np
 import cv2
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 st.set_page_config(layout="wide")
 st.title("🍋 Mango SER meas")
@@ -83,7 +83,23 @@ if uploaded_file:
         st.success(f"Scale set: 1 pixel = {mm_per_px:.4f} mm")
 
         # --- Step 2: Mango sampling ---
-        st.markdown("## 2️⃣ Draw around a mango (one at a time)")
+        st.markdown("## 2️⃣ Adjust Brightness (Optional)")
+
+        # Add a slider for brightness adjustment
+        brightness_factor = st.slider(
+            "Adjust image brightness (default: 1.0)",
+            min_value=0.5,
+            max_value=2.0,
+            value=1.0,
+            step=0.1
+        )
+
+        # Apply brightness adjustment using PIL
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(brightness_factor)
+        image_np = np.array(image)  # Update the numpy array after brightness adjustment
+
+        st.markdown("## 3️⃣ Draw around a mango (one at a time)")
         drawing_mode = st.selectbox("Drawing mode", ["freedraw", "circle", "rect"], index=1)
         canvas_result = st_canvas(
             fill_color="rgba(0, 255, 0, 0.2)",
