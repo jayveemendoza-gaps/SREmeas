@@ -10,6 +10,23 @@ st.title("🍋 Mango SER meas")
 
 uploaded_file = st.file_uploader("Upload an image of mangoes (top view)", type=["png", "jpg", "jpeg"])
 
+@st.cache_data
+def convert_to_hsv(image_np):
+    """Cache HSV conversion to avoid recomputation."""
+    return cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+
+def resize_with_aspect_ratio(image, target_width=800):
+    """Resize an image while maintaining its aspect ratio."""
+    w, h = image.size
+    aspect_ratio = w / h
+    if aspect_ratio > 1:  # Wider than tall
+        new_width = target_width
+        new_height = int(target_width / aspect_ratio)
+    else:  # Taller than wide
+        new_height = target_width
+        new_width = int(target_width * aspect_ratio)
+    return image.resize((new_width, new_height), Image.LANCZOS), new_width, new_height
+
 if uploaded_file:
     image = Image.open(uploaded_file).convert("RGB")  # Ensure no alpha channel
     image_np = np.array(image)
@@ -33,29 +50,18 @@ if uploaded_file:
     # --- Downscale if needed ---
     if quality_choice == "Normal (recommended)":
         max_dim = 800  # Reduce further for faster processing
-        scale = min(max_dim / h, max_dim / w, 1.0)
-        if scale < 1.0:
-            new_size = (int(w * scale), int(h * scale))
-            image = image.resize(new_size, Image.LANCZOS)
-            image_np = np.array(image)
-            h, w = image_np.shape[:2]
-            st.info(f"Image downscaled to {w}x{h} for faster processing.")
+        image, new_width, new_height = resize_with_aspect_ratio(image, target_width=max_dim)
+        image_np = np.array(image)
+        h, w = new_height, new_width
+        st.info(f"Image downscaled to {w}x{h} for faster processing.")
 
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
-    # Resize the image while maintaining the aspect ratio
-    aspect_ratio = w / h
-    if aspect_ratio > 1:  # Wider than tall
-        new_width = 800
-        new_height = int(800 / aspect_ratio)
-    else:  # Taller than wide
-        new_height = 800
-        new_width = int(800 * aspect_ratio)
-
+    image, new_width, new_height = resize_with_aspect_ratio(image, target_width=800)
     scale_canvas = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=5,
-        background_image=image.resize((new_width, new_height), Image.LANCZOS),  # Maintain aspect ratio
+        background_image=image,  # Maintain aspect ratio
         update_streamlit=True,
         height=new_height,  # Adjust height
         width=new_width,    # Adjust width
@@ -116,42 +122,49 @@ if uploaded_file:
             st.session_state.samples = []
 
         if canvas_result.image_data is not None and np.any(canvas_result.image_data != 255):
+            # Convert the canvas result to a binary mask
             mask = cv2.cvtColor(canvas_result.image_data.astype(np.uint8), cv2.COLOR_RGBA2GRAY)
             mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)[1]
 
-            hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+            # Convert the image to HSV for color-based masking
+            hsv = convert_to_hsv(image_np)
 
-            # Mask for green/yellow mango surface (tune these ranges as needed)
-            green_lower = np.array([20, 40, 40])
-            green_upper = np.array([90, 255, 255])
-            green_mask = cv2.inRange(hsv, green_lower, green_upper)
-
-            yellow_lower = np.array([15, 80, 80])
-            yellow_upper = np.array([40, 255, 255])
-            yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
-
-            # Mask for black/brown lesions
+            # Define color ranges for masks
+            green_yellow_lower = np.array([15, 40, 40])  # Combined green and yellow range
+            green_yellow_upper = np.array([90, 255, 255])
             lesion_lower = np.array([0, 0, 0])
             lesion_upper = np.array([40, 255, 120])
-            lesion_mask = cv2.inRange(hsv, lesion_lower, lesion_upper)
 
-            healthy_mask = cv2.inRange(hsv, np.array([15, 40, 40]), np.array([90, 255, 255]))
-            lesion_mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([40, 255, 120]))
-            total_mango_mask = cv2.bitwise_or(healthy_mask, lesion_mask)
-            total_mango_mask = cv2.bitwise_and(total_mango_mask, mask)
+            # Precompute the HSV mask
+            hsv_mask = (hsv[:, :, 0] >= green_yellow_lower[0]) & (hsv[:, :, 0] <= green_yellow_upper[0]) & \
+                       (hsv[:, :, 1] >= green_yellow_lower[1]) & (hsv[:, :, 1] <= green_yellow_upper[1]) & \
+                       (hsv[:, :, 2] >= green_yellow_lower[2]) & (hsv[:, :, 2] <= green_yellow_upper[2])
 
-            lesion_mask = cv2.bitwise_and(lesion_mask, mask)
+            lesion_mask = (hsv[:, :, 0] >= lesion_lower[0]) & (hsv[:, :, 0] <= lesion_upper[0]) & \
+                          (hsv[:, :, 1] >= lesion_lower[1]) & (hsv[:, :, 1] <= lesion_upper[1]) & \
+                          (hsv[:, :, 2] >= lesion_lower[2]) & (hsv[:, :, 2] <= lesion_upper[2])
 
-            mango_area_px = np.sum(total_mango_mask == 255)
-            lesion_area_px = np.sum(lesion_mask == 255)
+            # Apply user mask directly to boolean arrays (faster)
+            mango_mask_bool = (hsv_mask | lesion_mask) & (mask == 255)
+            lesion_mask_bool = lesion_mask & (mask == 255)
 
+            # Calculate areas directly from boolean arrays
+            mango_area_px = np.sum(mango_mask_bool)
+            lesion_area_px = np.sum(lesion_mask_bool)
+
+            # Convert to uint8 only for display
+            mango_mask = mango_mask_bool.astype(np.uint8) * 255
+            lesion_mask = lesion_mask_bool.astype(np.uint8) * 255
+
+            # Convert pixel areas to mm²
             mango_area_mm2 = mango_area_px * (mm_per_px ** 2)
             lesion_area_mm2 = lesion_area_px * (mm_per_px ** 2)
             lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 else 0
 
+            # Display results
             st.markdown("### 🟩 Selected Mango & Lesions")
             col1, col2 = st.columns(2)
-            col1.image(total_mango_mask, caption="Total Mango Area (Green/Yellow + Lesions)", use_column_width=True)
+            col1.image(mango_mask, caption="Total Mango Area (Green/Yellow + Lesions)", use_column_width=True)
             col2.image(lesion_mask, caption="Lesion Area (Black/Brown)", use_column_width=True)
 
             result = {
