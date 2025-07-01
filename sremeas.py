@@ -107,7 +107,40 @@ if uploaded_file:
         image_np = np.array(image)  # Update the numpy array after brightness adjustment
 
         st.markdown("## 3️⃣ Draw around a mango (one at a time)")
-        drawing_mode = st.selectbox("Drawing mode", ["freedraw", "circle", "rect"], index=1)
+        
+        drawing_mode = st.selectbox(
+            "Drawing mode", 
+            ["circle", "rect", "freedraw", "transform"], 
+            index=0,  # Default to circle (easiest for users)
+            help="Circle mode is recommended - easiest to position and resize. Use 'transform' mode to move/resize existing shapes."
+        )
+        
+        col1, col2, col3 = st.columns([2, 2, 1])
+        with col1:
+            realtime_update = st.checkbox(
+                "Real-time processing", 
+                value=False,
+                help="Process mango immediately when you move/resize shapes (slower but more interactive)"
+            )
+        with col2:
+            show_handles = st.checkbox(
+                "Show selection handles", 
+                value=True,
+                help="Show corner/edge handles for easier shape manipulation"
+            )
+        with col3:
+            if st.button("🗑️ Clear"):
+                st.rerun()
+        
+        # Add instruction based on mode
+        if drawing_mode == "transform":
+            st.info("🔄 **Transform Mode**: Click and drag existing shapes to move them, or drag corners/edges to resize.")
+        else:
+            st.info(f"✏️ **{drawing_mode.title()} Mode**: Draw a new {drawing_mode}. Switch to 'transform' mode to move/resize existing shapes.")
+
+        if drawing_mode == "freedraw":
+            st.warning("Free draw mode may be slower. For best results, draw slowly and steadily.")
+
         canvas_result = st_canvas(
             fill_color="rgba(0, 255, 0, 0.2)",
             stroke_width=3,
