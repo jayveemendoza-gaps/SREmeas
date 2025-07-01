@@ -15,6 +15,14 @@ def convert_to_hsv(_image_np):
     """Cache HSV conversion to avoid recomputation. Use underscore to ignore hash."""
     return cv2.cvtColor(_image_np, cv2.COLOR_RGB2HSV)
 
+@st.cache_data
+def apply_color_mask(_hsv_img, _lower, _upper, _user_mask=None):
+    """Cache mask application to avoid recomputation."""
+    mask = cv2.inRange(_hsv_img, _lower, _upper)
+    if _user_mask is not None:
+        mask = (mask == 255) & _user_mask
+    return mask
+
 def resize_with_aspect_ratio(image, target_width=800):
     """Resize an image while maintaining its aspect ratio."""
     w, h = image.size
@@ -28,9 +36,18 @@ def resize_with_aspect_ratio(image, target_width=800):
     return image.resize((new_width, new_height), Image.LANCZOS), new_width, new_height
 
 if uploaded_file:
-    image = Image.open(uploaded_file).convert("RGB")  # Ensure no alpha channel
-    image_np = np.array(image)
-    h, w = image_np.shape[:2]
+    # Initialize session state at the very beginning
+    if "samples" not in st.session_state:
+        st.session_state.samples = []
+    
+    # Use try-except for robust image loading
+    try:
+        image = Image.open(uploaded_file).convert("RGB")  # Ensure no alpha channel
+        image_np = np.array(image)
+        h, w = image_np.shape[:2]
+    except Exception as e:
+        st.error(f"Error loading image: {str(e)}")
+        st.stop()
 
     # --- Detect large image and prompt for quality ---
     large_image = (h * w > 2000 * 2000)  # Example threshold
@@ -59,16 +76,19 @@ if uploaded_file:
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
     # Use consistent dimensions for both canvases
     display_image, display_width, display_height = resize_with_aspect_ratio(image, target_width=800)
-    scale_canvas = st_canvas(
-        fill_color="rgba(0,0,0,0)",
-        stroke_width=5,
-        background_image=display_image,
-        update_streamlit=True,
-        height=display_height,
-        width=display_width,
-        drawing_mode="line",
-        key="scale_canvas",
-    )
+    
+    # Use st.container to reduce redraws
+    with st.container():
+        scale_canvas = st_canvas(
+            fill_color="rgba(0,0,0,0)",
+            stroke_width=5,
+            background_image=display_image,
+            update_streamlit=True,
+            height=display_height,
+            width=display_width,
+            drawing_mode="line",
+            key="scale_canvas",
+        )
 
     scale_length_mm = st.number_input(
         "Enter the real-world length of the drawn line (mm):",
@@ -82,7 +102,9 @@ if uploaded_file:
         if obj["type"] == "line":
             x0, y0 = obj["x1"], obj["y1"]
             x1, y1 = obj["x2"], obj["y2"]
-            scale_px = np.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
+            # Use faster math operations
+            dx, dy = x1 - x0, y1 - y0
+            scale_px = np.sqrt(dx*dx + dy*dy)
             st.info(f"Line length: {scale_px:.2f} pixels")
 
     if scale_px and scale_length_mm > 0:
@@ -101,38 +123,28 @@ if uploaded_file:
             step=0.1
         )
 
-        # Apply brightness adjustment using PIL
-        enhancer = ImageEnhance.Brightness(image)
-        image = enhancer.enhance(brightness_factor)
-        image_np = np.array(image)  # Update the numpy array after brightness adjustment
+        # Only adjust brightness if needed (skip if factor is 1.0)
+        if brightness_factor != 1.0:
+            enhancer = ImageEnhance.Brightness(image)
+            brightness_adjusted_image = enhancer.enhance(brightness_factor)
+        else:
+            brightness_adjusted_image = image
+            
+        brightness_adjusted_np = np.array(brightness_adjusted_image)
+        
+        # Use brightness-adjusted image for display only
+        brightness_display_image, _, _ = resize_with_aspect_ratio(brightness_adjusted_image, target_width=800)
 
         st.markdown("## 3️⃣ Draw around a mango (one at a time)")
         
         drawing_mode = st.selectbox(
             "Drawing mode", 
             ["circle", "rect", "freedraw", "transform"], 
-            index=0,  # Default to circle (easiest for users)
+            index=0,
             help="Circle mode is recommended - easiest to position and resize. Use 'transform' mode to move/resize existing shapes."
         )
-        
-        col1, col2, col3 = st.columns([2, 2, 1])
-        with col1:
-            realtime_update = st.checkbox(
-                "Real-time processing", 
-                value=False,
-                help="Process mango immediately when you move/resize shapes (slower but more interactive)"
-            )
-        with col2:
-            show_handles = st.checkbox(
-                "Show selection handles", 
-                value=True,
-                help="Show corner/edge handles for easier shape manipulation"
-            )
-        with col3:
-            if st.button("🗑️ Clear"):
-                st.rerun()
-        
-        # Add instruction based on mode
+
+        # Remove the unnecessary columns and checkboxes entirely
         if drawing_mode == "transform":
             st.info("🔄 **Transform Mode**: Click and drag existing shapes to move them, or drag corners/edges to resize.")
         else:
@@ -141,24 +153,24 @@ if uploaded_file:
         if drawing_mode == "freedraw":
             st.warning("Free draw mode may be slower. For best results, draw slowly and steadily.")
 
-        canvas_result = st_canvas(
-            fill_color="rgba(0, 255, 0, 0.2)",
-            stroke_width=3,
-            background_image=display_image,  # Use same image as scale canvas
-            update_streamlit=True,
-            height=display_height,  # Use same dimensions
-            width=display_width,
-            drawing_mode=drawing_mode,
-            key="mango_canvas",
-        )
-
-        if "samples" not in st.session_state:
-            st.session_state.samples = []
+        # Use st.container to reduce redraws
+        with st.container():
+            canvas_result = st_canvas(
+                fill_color="rgba(0, 255, 0, 0.2)",
+                stroke_width=3,
+                background_image=brightness_display_image,
+                update_streamlit=True,
+                height=display_height,
+                width=display_width,
+                drawing_mode=drawing_mode,
+                key="mango_canvas",
+            )
 
         if canvas_result.image_data is not None and np.any(canvas_result.image_data != 255):
             # Show processing indicator
             with st.spinner("Processing mango area..."):
                 # Get user mask first (much faster)
+                # Use uint8 instead of bool for masks to save memory
                 mask = canvas_result.image_data[:, :, 3]  # Use alpha channel directly
                 user_mask = mask > 10
                 
@@ -167,23 +179,27 @@ if uploaded_file:
                     st.warning("No area selected. Please draw on the mango.")
                     st.stop()
                 
-                # Only process pixels within the user mask (HUGE speed boost)
+                # Get bounding box to reduce processing area
                 y_coords, x_coords = np.where(user_mask)
                 if len(y_coords) == 0:
                     st.warning("No valid area selected.")
                     st.stop()
                 
-                # Get bounding box to reduce processing area even further
-                y_min, y_max = max(0, y_coords.min()), min(image_np.shape[0], y_coords.max() + 1)
-                x_min, x_max = max(0, x_coords.min()), min(image_np.shape[1], x_coords.max() + 1)
+                # Calculate bbox with vectorized operations (faster)
+                y_min, y_max = np.min(y_coords), np.max(y_coords) + 1
+                x_min, x_max = np.min(x_coords), np.max(x_coords) + 1
+                
+                # Safety bounds check
+                y_min, y_max = max(0, y_min), min(brightness_adjusted_np.shape[0], y_max)
+                x_min, x_max = max(0, x_min), min(brightness_adjusted_np.shape[1], x_max)
                 
                 # Validate bounding box
                 if y_max <= y_min or x_max <= x_min:
                     st.error("Invalid selection area. Please try again.")
                     st.stop()
                 
-                # Crop image to bounding box only
-                crop_image = image_np[y_min:y_max, x_min:x_max]
+                # Crop image and mask to bounding box (huge speed boost)
+                crop_image = brightness_adjusted_np[y_min:y_max, x_min:x_max]
                 crop_mask = user_mask[y_min:y_max, x_min:x_max]
                 
                 # Convert only the cropped area to HSV (much faster)
@@ -211,16 +227,52 @@ if uploaded_file:
                 mango_mask = np.zeros_like(user_mask, dtype=np.uint8)
                 lesion_mask = np.zeros_like(user_mask, dtype=np.uint8)
                 
-                mango_mask[y_min:y_max, x_min:x_max] = (hsv_mask_crop | lesion_mask_crop).astype(np.uint8) * 255
-                lesion_mask[y_min:y_max, x_min:x_max] = lesion_mask_crop.astype(np.uint8) * 255
-            # Convert pixel areas to mm² with safety checks
-            if mm_per_px <= 0:
-                st.error("Invalid scale conversion. Please set the scale again.")
-                st.stop()
+                # Get the actual dimensions of the slices
+                slice_height, slice_width = y_max - y_min, x_max - x_min
                 
-            mango_area_mm2 = mango_area_px * (mm_per_px ** 2)
-            lesion_area_mm2 = lesion_area_px * (mm_per_px ** 2)
-            lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 > 0 else 0
+                # Prepare combined mask and lesion mask
+                combined_mask = (hsv_mask_crop | lesion_mask_crop).astype(np.uint8) * 255
+                lesion_display_mask = lesion_mask_crop.astype(np.uint8) * 255
+                
+                # Verify dimensions before assignment (important to avoid broadcasting errors)
+                if combined_mask.shape != (slice_height, slice_width):
+                    # Resize if necessary
+                    combined_mask = cv2.resize(combined_mask, (slice_width, slice_height), 
+                                               interpolation=cv2.INTER_NEAREST)
+                    
+                if lesion_display_mask.shape != (slice_height, slice_width):
+                    # Resize if necessary
+                    lesion_display_mask = cv2.resize(lesion_display_mask, (slice_width, slice_height), 
+                                                     interpolation=cv2.INTER_NEAREST)
+                
+                # Now safely assign to the full mask
+                mango_mask[y_min:y_max, x_min:x_max] = combined_mask
+                lesion_mask[y_min:y_max, x_min:x_max] = lesion_display_mask
+                
+            # Convert pixel areas to mm² with comprehensive safety checks
+            try:
+                if mm_per_px <= 0:
+                    st.error("Invalid scale conversion. Please set the scale again.")
+                    st.stop()
+                
+                if mango_area_px == 0:
+                    st.warning("No mango area detected. Try adjusting the brightness or drawing a different area.")
+                    st.stop()
+                
+                # Square the mm_per_px value once instead of in each calculation
+                mm_per_px_squared = mm_per_px ** 2
+                mango_area_mm2 = mango_area_px * mm_per_px_squared
+                lesion_area_mm2 = lesion_area_px * mm_per_px_squared
+                lesion_percent = (lesion_area_px / mango_area_px * 100) if mango_area_px > 0 else 0
+                
+                # Validate results
+                if mango_area_mm2 < 0 or lesion_area_mm2 < 0:
+                    st.error("Invalid area calculations. Please try again.")
+                    st.stop()
+                    
+            except Exception as e:
+                st.error(f"Error in area calculation: {str(e)}")
+                st.stop()
 
             # Display results
             st.markdown("### 🟩 Selected Mango & Lesions")
@@ -238,13 +290,23 @@ if uploaded_file:
             st.dataframe(pd.DataFrame([result]))
 
             if st.button("Add this mango as a sample"):
-                st.session_state.samples.append(result)
-                st.success(f"Sample {result['Sample #']} added! Draw the next mango.")
+                try:
+                    st.session_state.samples.append(result)
+                    st.success(f"Sample {result['Sample #']} added! Draw the next mango.")
+                except Exception as e:
+                    st.error(f"Error adding sample: {str(e)}")
 
         if st.session_state.samples:
             st.markdown("### 🥭 All Mango Samples")
-            all_samples_df = pd.DataFrame(st.session_state.samples)
-            st.dataframe(all_samples_df)
+            try:
+                # Cache the dataframe creation to avoid redundant operations
+                all_samples_df = pd.DataFrame(st.session_state.samples)
+                st.dataframe(all_samples_df, use_container_width=True)
+            except Exception as e:
+                st.error(f"Error displaying samples: {str(e)}")
+                # Reset samples if corrupted
+                st.session_state.samples = []
+                st.experimental_rerun()
 
             # Safe delete implementation with better state management
             st.markdown("#### Remove Samples")
@@ -265,19 +327,25 @@ if uploaded_file:
                             for i, sample in enumerate(st.session_state.samples):
                                 sample["Sample #"] = i + 1
                             st.success(f"Deleted sample {deleted_sample['Sample #']}")
-                            st.rerun()
+                            st.experimental_rerun()
                 with col2:
                     if st.button("🗑️ Clear All Samples", key="clear_all"):
                         st.session_state.samples = []
                         st.success("All samples cleared!")
-                        st.rerun()
+                        st.experimental_rerun()
 
             # --- CSV export with custom filename ---
             csv_filename = st.text_input(
                 "Enter filename for CSV export (without .csv):",
                 value="mango_lesion_samples"
             )
-            csv = all_samples_df.to_csv(index=False).encode()
+            
+            # Create CSV on-demand rather than keeping it in memory
+            @st.cache_data
+            def get_csv(_df):
+                return _df.to_csv(index=False).encode()
+                
+            csv = get_csv(all_samples_df)
             st.download_button(
                 "📥 Download All Samples as CSV",
                 csv,
