@@ -11,9 +11,9 @@ st.title("🍋 Mango SER meas")
 uploaded_file = st.file_uploader("Upload an image of mangoes (top view)", type=["png", "jpg", "jpeg"])
 
 @st.cache_data
-def convert_to_hsv(image_np):
-    """Cache HSV conversion to avoid recomputation."""
-    return cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+def convert_to_hsv(_image_np):
+    """Cache HSV conversion to avoid recomputation. Use underscore to ignore hash."""
+    return cv2.cvtColor(_image_np, cv2.COLOR_RGB2HSV)
 
 def resize_with_aspect_ratio(image, target_width=800):
     """Resize an image while maintaining its aspect ratio."""
@@ -57,14 +57,15 @@ if uploaded_file:
 
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
-    image, new_width, new_height = resize_with_aspect_ratio(image, target_width=800)
+    # Use consistent dimensions for both canvases
+    display_image, display_width, display_height = resize_with_aspect_ratio(image, target_width=800)
     scale_canvas = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=5,
-        background_image=image,  # Maintain aspect ratio
+        background_image=display_image,
         update_streamlit=True,
-        height=new_height,  # Adjust height
-        width=new_width,    # Adjust width
+        height=display_height,
+        width=display_width,
         drawing_mode="line",
         key="scale_canvas",
     )
@@ -110,10 +111,10 @@ if uploaded_file:
         canvas_result = st_canvas(
             fill_color="rgba(0, 255, 0, 0.2)",
             stroke_width=3,
-            background_image=image,  # Use PIL Image for best compatibility
+            background_image=display_image,  # Use same image as scale canvas
             update_streamlit=True,
-            height=h,
-            width=w,
+            height=display_height,  # Use same dimensions
+            width=display_width,
             drawing_mode=drawing_mode,
             key="mango_canvas",
         )
@@ -122,44 +123,71 @@ if uploaded_file:
             st.session_state.samples = []
 
         if canvas_result.image_data is not None and np.any(canvas_result.image_data != 255):
-            # Convert the canvas result to a binary mask
-            mask = cv2.cvtColor(canvas_result.image_data.astype(np.uint8), cv2.COLOR_RGBA2GRAY)
-            mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)[1]
-
-            # Convert the image to HSV for color-based masking
-            hsv = convert_to_hsv(image_np)
-
-            # Define color ranges for masks
-            green_yellow_lower = np.array([15, 40, 40])  # Combined green and yellow range
-            green_yellow_upper = np.array([90, 255, 255])
-            lesion_lower = np.array([0, 0, 0])
-            lesion_upper = np.array([40, 255, 120])
-
-            # Precompute the HSV mask
-            hsv_mask = (hsv[:, :, 0] >= green_yellow_lower[0]) & (hsv[:, :, 0] <= green_yellow_upper[0]) & \
-                       (hsv[:, :, 1] >= green_yellow_lower[1]) & (hsv[:, :, 1] <= green_yellow_upper[1]) & \
-                       (hsv[:, :, 2] >= green_yellow_lower[2]) & (hsv[:, :, 2] <= green_yellow_upper[2])
-
-            lesion_mask = (hsv[:, :, 0] >= lesion_lower[0]) & (hsv[:, :, 0] <= lesion_upper[0]) & \
-                          (hsv[:, :, 1] >= lesion_lower[1]) & (hsv[:, :, 1] <= lesion_upper[1]) & \
-                          (hsv[:, :, 2] >= lesion_lower[2]) & (hsv[:, :, 2] <= lesion_upper[2])
-
-            # Apply user mask directly to boolean arrays (faster)
-            mango_mask_bool = (hsv_mask | lesion_mask) & (mask == 255)
-            lesion_mask_bool = lesion_mask & (mask == 255)
-
-            # Calculate areas directly from boolean arrays
-            mango_area_px = np.sum(mango_mask_bool)
-            lesion_area_px = np.sum(lesion_mask_bool)
-
-            # Convert to uint8 only for display
-            mango_mask = mango_mask_bool.astype(np.uint8) * 255
-            lesion_mask = lesion_mask_bool.astype(np.uint8) * 255
-
-            # Convert pixel areas to mm²
+            # Show processing indicator
+            with st.spinner("Processing mango area..."):
+                # Get user mask first (much faster)
+                mask = canvas_result.image_data[:, :, 3]  # Use alpha channel directly
+                user_mask = mask > 10
+                
+                # Early exit if no pixels selected
+                if not np.any(user_mask):
+                    st.warning("No area selected. Please draw on the mango.")
+                    st.stop()
+                
+                # Only process pixels within the user mask (HUGE speed boost)
+                y_coords, x_coords = np.where(user_mask)
+                if len(y_coords) == 0:
+                    st.warning("No valid area selected.")
+                    st.stop()
+                
+                # Get bounding box to reduce processing area even further
+                y_min, y_max = max(0, y_coords.min()), min(image_np.shape[0], y_coords.max() + 1)
+                x_min, x_max = max(0, x_coords.min()), min(image_np.shape[1], x_coords.max() + 1)
+                
+                # Validate bounding box
+                if y_max <= y_min or x_max <= x_min:
+                    st.error("Invalid selection area. Please try again.")
+                    st.stop()
+                
+                # Crop image to bounding box only
+                crop_image = image_np[y_min:y_max, x_min:x_max]
+                crop_mask = user_mask[y_min:y_max, x_min:x_max]
+                
+                # Convert only the cropped area to HSV (much faster)
+                hsv_crop = cv2.cvtColor(crop_image, cv2.COLOR_RGB2HSV)
+                
+                # Define color ranges for masks
+                green_yellow_lower = np.array([15, 40, 40])
+                green_yellow_upper = np.array([90, 255, 255])
+                lesion_lower = np.array([0, 0, 0])
+                lesion_upper = np.array([40, 255, 120])
+                
+                # Apply masks only to cropped area
+                hsv_mask_crop = cv2.inRange(hsv_crop, green_yellow_lower, green_yellow_upper)
+                lesion_mask_crop = cv2.inRange(hsv_crop, lesion_lower, lesion_upper)
+                
+                # Apply user mask to cropped masks
+                hsv_mask_crop = (hsv_mask_crop == 255) & crop_mask
+                lesion_mask_crop = (lesion_mask_crop == 255) & crop_mask
+                
+                # Calculate areas directly from cropped boolean arrays
+                mango_area_px = np.sum(hsv_mask_crop | lesion_mask_crop)
+                lesion_area_px = np.sum(lesion_mask_crop)
+                
+                # Create full-size masks for display (only if needed)
+                mango_mask = np.zeros_like(user_mask, dtype=np.uint8)
+                lesion_mask = np.zeros_like(user_mask, dtype=np.uint8)
+                
+                mango_mask[y_min:y_max, x_min:x_max] = (hsv_mask_crop | lesion_mask_crop).astype(np.uint8) * 255
+                lesion_mask[y_min:y_max, x_min:x_max] = lesion_mask_crop.astype(np.uint8) * 255
+            # Convert pixel areas to mm² with safety checks
+            if mm_per_px <= 0:
+                st.error("Invalid scale conversion. Please set the scale again.")
+                st.stop()
+                
             mango_area_mm2 = mango_area_px * (mm_per_px ** 2)
             lesion_area_mm2 = lesion_area_px * (mm_per_px ** 2)
-            lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 else 0
+            lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 > 0 else 0
 
             # Display results
             st.markdown("### 🟩 Selected Mango & Lesions")
@@ -185,15 +213,31 @@ if uploaded_file:
             all_samples_df = pd.DataFrame(st.session_state.samples)
             st.dataframe(all_samples_df)
 
-            # Add delete buttons for each row
-            for idx, row in all_samples_df.iterrows():
-                col1, col2 = st.columns([8, 1])
+            # Safe delete implementation with better state management
+            st.markdown("#### Remove Samples")
+            if len(st.session_state.samples) > 0:
+                sample_to_delete = st.selectbox(
+                    "Select sample to delete:",
+                    options=range(len(st.session_state.samples)),
+                    format_func=lambda x: f"Sample {st.session_state.samples[x]['Sample #']}",
+                    key="delete_selector"
+                )
+                
+                col1, col2 = st.columns([1, 4])
                 with col1:
-                    st.write(row.to_dict())
+                    if st.button("🗑️ Delete Selected", key="delete_button"):
+                        if 0 <= sample_to_delete < len(st.session_state.samples):
+                            deleted_sample = st.session_state.samples.pop(sample_to_delete)
+                            # Renumber remaining samples
+                            for i, sample in enumerate(st.session_state.samples):
+                                sample["Sample #"] = i + 1
+                            st.success(f"Deleted sample {deleted_sample['Sample #']}")
+                            st.rerun()
                 with col2:
-                    if st.button("🗑️ Delete", key=f"delete_{idx}"):
-                        st.session_state.samples.pop(idx)
-                        st.experimental_rerun()
+                    if st.button("🗑️ Clear All Samples", key="clear_all"):
+                        st.session_state.samples = []
+                        st.success("All samples cleared!")
+                        st.rerun()
 
             # --- CSV export with custom filename ---
             csv_filename = st.text_input(
