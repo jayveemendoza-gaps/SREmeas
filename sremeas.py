@@ -14,20 +14,21 @@ st.set_page_config(
 )
 st.title("🍋 Mango SER meas")
 
-# Simplified image loading without caching that can cause issues
-def load_image(file_bytes):
-    """Load image from bytes with error handling."""
+
+@st.cache_data(show_spinner=False)
+def load_image(_uploaded_file):
+    """Load image from an uploaded file with error handling and caching."""
     try:
-        image = Image.open(io.BytesIO(file_bytes))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        return image
+        image = Image.open(_uploaded_file)
+        return image.convert("RGB")  # Standardize to RGB
     except Exception:
         return None
 
-def resize_with_aspect_ratio(image, target_width=800):
-    """Resize an image while maintaining its aspect ratio."""
-    w, h = image.size
+
+@st.cache_data(show_spinner=False)
+def resize_with_aspect_ratio(_image, target_width=800):
+    """Resize an image while maintaining its aspect ratio, with caching."""
+    w, h = _image.size
     aspect_ratio = w / h
     if aspect_ratio > 1:  # Wider than tall
         new_width = target_width
@@ -35,7 +36,8 @@ def resize_with_aspect_ratio(image, target_width=800):
     else:  # Taller than wide
         new_height = target_width
         new_width = int(target_width * aspect_ratio)
-    return image.resize((new_width, new_height), Image.LANCZOS), new_width, new_height
+    return _image.resize((new_width, new_height), Image.LANCZOS), new_width, new_height
+
 
 # Remove caching from this function to prevent dependency issues
 def create_display_image(image, target_width=800):
@@ -43,9 +45,11 @@ def create_display_image(image, target_width=800):
     display_img, width, height = resize_with_aspect_ratio(image, target_width)
     return display_img, width, height
 
+
 def convert_to_hsv(_image_np):
     """Cache HSV conversion to avoid recomputation. Use underscore to ignore hash."""
     return cv2.cvtColor(_image_np, cv2.COLOR_RGB2HSV)
+
 
 def apply_color_mask(_hsv_img, _lower, _upper, _user_mask=None):
     """Cache mask application to avoid recomputation."""
@@ -54,11 +58,13 @@ def apply_color_mask(_hsv_img, _lower, _upper, _user_mask=None):
         mask = (mask == 255) & _user_mask
     return mask
 
+
 # Simplified area calculation without caching
 def calculate_areas(mask1, mask2):
     """Calculate areas for better performance."""
     combined = mask1 | mask2
     return np.sum(combined), np.sum(mask2)
+
 
 # Add proper file upload guidance
 uploaded_file = st.file_uploader(
@@ -73,25 +79,23 @@ if uploaded_file:
         st.session_state.samples = []
     
     try:
-        file_bytes = uploaded_file.getvalue()
-        if len(file_bytes) == 0:
-            st.error("Empty file uploaded.")
-            st.stop()
-        if len(file_bytes) > 50 * 1024 * 1024:
-            st.error("File too large. Maximum 50MB.")
-            st.stop()
         # Load and immediately downscale image for all further use (faster)
-        image = load_image(file_bytes)
+        # Pass the uploaded_file object directly to the cached function
+        image = load_image(uploaded_file)
         if image is None:
             st.error("Cannot load image. Please try a different file.")
             st.stop()
+
         max_dim = 600  # Use a smaller dimension for faster canvas and processing
+        # Pass the image object to the cached resize function
         image, new_width, new_height = resize_with_aspect_ratio(image, target_width=max_dim)
+        
         image_np = np.array(image)
         h, w = image_np.shape[:2]
         st.info(f"Image downscaled to {w}x{h} for fast processing and display.")
+
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.error(f"Error processing image: {str(e)}")
         st.stop()
 
     # --- Step 1: Set scale ---
