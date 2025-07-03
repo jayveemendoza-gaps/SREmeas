@@ -72,7 +72,6 @@ if uploaded_file:
     if "samples" not in st.session_state:
         st.session_state.samples = []
     
-    # Simplified image loading
     try:
         file_bytes = uploaded_file.getvalue()
         
@@ -90,47 +89,18 @@ if uploaded_file:
         if image is None:
             st.error("Cannot load image. Please try a different file.")
             st.stop()
-        
-        # Convert to array
-        image_np = np.array(image, dtype=np.uint8)
-        h, w = image_np.shape[:2]
-        
-        # Basic dimension check
-        if h < 10 or w < 10:
-            st.error("Image too small.")
-            st.stop()
-            
+        # Always downscale for processing and display
+        max_dim = 800
+        image, new_width, new_height = resize_with_aspect_ratio(image, target_width=max_dim)
+        image_np = np.array(image)
+        h, w = new_height, new_width
+        st.info(f"Image downscaled to {w}x{h} for processing and display.")
     except Exception as e:
         st.error(f"Error: {str(e)}")
         st.stop()
 
-    # --- Detect large image and prompt for quality ---
-    large_image = (h * w > 2000 * 2000)  # Example threshold
-    if large_image:
-        st.warning(
-            f"Your image is very large ({w}x{h}). High quality mode may be slow. "
-            "Choose 'Normal' to process a downscaled version."
-        )
-        quality_choice = st.radio(
-            "Select image processing quality:",
-            ["Normal (recommended)", "High Quality (slow)"],
-            index=0
-        )
-    else:
-        quality_choice = "High Quality (slow)"
-
-    # --- Downscale if needed ---
-    if quality_choice == "Normal (recommended)":
-        max_dim = 800  # Reduce further for faster processing
-        image, new_width, new_height = resize_with_aspect_ratio(image, target_width=max_dim)
-        image_np = np.array(image)
-        h, w = new_height, new_width
-        st.info(f"Image downscaled to {w}x{h} for faster processing.")
-
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
-    
-    # Create display image without caching
     try:
         display_image, display_width, display_height = create_display_image(image)
     except Exception as e:
@@ -167,7 +137,6 @@ if uploaded_file:
         if obj["type"] == "line":
             x0, y0 = obj["x1"], obj["y1"]
             x1, y1 = obj["x2"], obj["y2"]
-            # Use faster math operations
             dx, dy = x1 - x0, y1 - y0
             scale_px = np.sqrt(dx*dx + dy*dy)
             st.info(f"Line length: {scale_px:.2f} pixels")
@@ -236,8 +205,8 @@ if uploaded_file:
         if canvas_result.image_data is not None and np.any(canvas_result.image_data != 255):
             # Show a more informative processing indicator
             with st.spinner("Processing mango area... (this may take a moment on slow connections)"):
-                # Optimize mask processing with numpy operations
-                mask = canvas_result.image_data[:, :, 3]  # Use alpha channel directly
+                # Use the canvas mask directly, which matches the downscaled image size
+                mask = canvas_result.image_data[:, :, 3]
                 user_mask = mask > 10
                 
                 # Early exit if no pixels selected
