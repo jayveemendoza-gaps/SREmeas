@@ -25,7 +25,7 @@ def load_image(file_bytes):
             image = image.convert('RGB')
         return image
     except Exception as e:
-        st.error(f"Failed to load image: {str(e)}")
+        # Don't call st.error() inside cached function - return None instead
         return None
 
 # Optimized display image creation for canvases
@@ -85,40 +85,42 @@ if uploaded_file:
             # Cache the file content to avoid rereading on rerun
             file_bytes = uploaded_file.getvalue()
             
-            # Validate file size
+            # Validate file size first
             if len(file_bytes) > 50 * 1024 * 1024:  # 50MB limit
                 st.error("File too large. Please upload an image smaller than 50MB.")
+                st.stop()
+            
+            # Basic file validation
+            if len(file_bytes) == 0:
+                st.error("Empty file. Please upload a valid image.")
                 st.stop()
                 
             image = load_image(file_bytes)
             if image is None:
-                st.error("Could not load the image. Please try a different file.")
+                st.error("Could not load the image. Please check the file format and try again.")
                 st.stop()
                 
             # Convert to numpy array with proper error handling
-            try:
-                image_np = np.array(image, dtype=np.uint8)
-            except Exception as e:
-                st.error(f"Error converting image to array: {str(e)}")
+            image_np = np.array(image, dtype=np.uint8)
+            
+            # Validate array conversion
+            if image_np.size == 0:
+                st.error("Invalid image data. Please try a different image.")
                 st.stop()
                 
             h, w = image_np.shape[:2]
             
             # Validate image dimensions
             if h < 50 or w < 50:
-                st.error("Image too small. Please upload a larger image.")
+                st.error("Image too small. Please upload a larger image (minimum 50x50 pixels).")
                 st.stop()
             
             # More aggressive handling for extremely large images
             if h * w > 8000 * 8000:
                 st.warning("Image is extremely large and will be automatically resized.")
-                try:
-                    image, new_width, new_height = resize_with_aspect_ratio(image, target_width=2000)
-                    image_np = np.array(image, dtype=np.uint8)
-                    h, w = new_height, new_width
-                except Exception as e:
-                    st.error(f"Error resizing large image: {str(e)}")
-                    st.stop()
+                image, new_width, new_height = resize_with_aspect_ratio(image, target_width=2000)
+                image_np = np.array(image, dtype=np.uint8)
+                h, w = new_height, new_width
                     
     except Exception as e:
         st.error(f"Error loading image: {str(e)}")
@@ -143,14 +145,10 @@ if uploaded_file:
     # --- Downscale if needed ---
     if quality_choice == "Normal (recommended)":
         max_dim = 800  # Reduce further for faster processing
-        try:
-            image, new_width, new_height = resize_with_aspect_ratio(image, target_width=max_dim)
-            image_np = np.array(image)
-            h, w = new_height, new_width
-            st.info(f"Image downscaled to {w}x{h} for faster processing.")
-        except Exception as e:
-            st.error(f"Error downscaling image: {str(e)}")
-            st.stop()
+        image, new_width, new_height = resize_with_aspect_ratio(image, target_width=max_dim)
+        image_np = np.array(image)
+        h, w = new_height, new_width
+        st.info(f"Image downscaled to {w}x{h} for faster processing.")
 
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
