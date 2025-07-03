@@ -14,11 +14,18 @@ st.set_page_config(
 )
 st.title("🍋 Mango SER meas")
 
-# Enhanced cache for image loading to speed up repeated uploads
-@st.cache_data(ttl=3600)
+# Enhanced cache for image loading with better parameters
+@st.cache_data(ttl=3600, max_entries=2)
 def load_image(file_bytes):
     """Cache image loading to avoid repeated processing of the same image."""
     return Image.open(io.BytesIO(file_bytes)).convert("RGB")
+
+# Optimized display image creation for canvases
+@st.cache_data
+def create_display_image(image, target_width=800):
+    """Create a properly sized display image for canvas backgrounds."""
+    display_img, width, height = resize_with_aspect_ratio(image, target_width)
+    return display_img, width, height
 
 @st.cache_data
 def convert_to_hsv(_image_np):
@@ -64,20 +71,21 @@ if uploaded_file:
     if "samples" not in st.session_state:
         st.session_state.samples = []
     
-    # Use try-except for robust image loading with caching
+    # Optimize image loading with better error handling
     try:
-        # Cache the file content to avoid rereading on rerun
-        file_bytes = uploaded_file.getvalue()
-        image = load_image(file_bytes)
-        image_np = np.array(image)
-        h, w = image_np.shape[:2]
-        
-        # Add automatic limit for extremely large images
-        if h * w > 8000 * 8000:
-            st.warning("Image is extremely large and will be automatically resized.")
-            image, new_width, new_height = resize_with_aspect_ratio(image, target_width=2000)
-            image_np = np.array(image)
-            h, w = new_height, new_width
+        with st.spinner("Loading image..."):
+            # Cache the file content to avoid rereading on rerun
+            file_bytes = uploaded_file.getvalue()
+            image = load_image(file_bytes)
+            image_np = np.array(image, dtype=np.uint8)  # Specify dtype for better memory usage
+            h, w = image_np.shape[:2]
+            
+            # More aggressive handling for extremely large images
+            if h * w > 8000 * 8000:
+                st.warning("Image is extremely large and will be automatically resized.")
+                image, new_width, new_height = resize_with_aspect_ratio(image, target_width=2000)
+                image_np = np.array(image, dtype=np.uint8)
+                h, w = new_height, new_width
     except Exception as e:
         st.error(f"Error loading image: {str(e)}")
         st.stop()
@@ -107,21 +115,34 @@ if uploaded_file:
 
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
-    # Use consistent dimensions for both canvases
-    display_image, display_width, display_height = resize_with_aspect_ratio(image, target_width=800)
     
-    # Use st.container to reduce redraws
+    # Optimize display image creation for scale canvas
+    try:
+        with st.spinner("Preparing canvas..."):
+            # Use the cached function to create display image
+            display_image, display_width, display_height = create_display_image(image)
+    except Exception as e:
+        st.error(f"Error preparing image for display: {str(e)}")
+        st.info("Try using a different image format or a smaller image.")
+        st.stop()
+    
+    # Use st.container to reduce redraws and improve canvas performance
     with st.container():
-        scale_canvas = st_canvas(
-            fill_color="rgba(0,0,0,0)",
-            stroke_width=5,
-            background_image=display_image,
-            update_streamlit=True,
-            height=display_height,
-            width=display_width,
-            drawing_mode="line",
-            key="scale_canvas",
-        )
+        try:
+            scale_canvas = st_canvas(
+                fill_color="rgba(0,0,0,0)",
+                stroke_width=5,
+                background_image=display_image,
+                update_streamlit=True,
+                height=display_height,
+                width=display_width,
+                drawing_mode="line",
+                key="scale_canvas",
+            )
+        except Exception as e:
+            st.error(f"Canvas initialization error: {str(e)}")
+            st.info("Try refreshing the page or using a different browser.")
+            st.stop()
 
     scale_length_mm = st.number_input(
         "Enter the real-world length of the drawn line (mm):",
