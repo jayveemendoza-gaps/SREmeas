@@ -18,7 +18,15 @@ st.title("🍋 Mango SER meas")
 @st.cache_data(ttl=3600, max_entries=2)
 def load_image(file_bytes):
     """Cache image loading to avoid repeated processing of the same image."""
-    return Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    try:
+        image = Image.open(io.BytesIO(file_bytes))
+        # Ensure image is in RGB mode
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        return image
+    except Exception as e:
+        st.error(f"Failed to load image: {str(e)}")
+        return None
 
 # Optimized display image creation for canvases
 @st.cache_data
@@ -76,18 +84,45 @@ if uploaded_file:
         with st.spinner("Loading image..."):
             # Cache the file content to avoid rereading on rerun
             file_bytes = uploaded_file.getvalue()
+            
+            # Validate file size
+            if len(file_bytes) > 50 * 1024 * 1024:  # 50MB limit
+                st.error("File too large. Please upload an image smaller than 50MB.")
+                st.stop()
+                
             image = load_image(file_bytes)
-            image_np = np.array(image, dtype=np.uint8)  # Specify dtype for better memory usage
+            if image is None:
+                st.error("Could not load the image. Please try a different file.")
+                st.stop()
+                
+            # Convert to numpy array with proper error handling
+            try:
+                image_np = np.array(image, dtype=np.uint8)
+            except Exception as e:
+                st.error(f"Error converting image to array: {str(e)}")
+                st.stop()
+                
             h, w = image_np.shape[:2]
+            
+            # Validate image dimensions
+            if h < 50 or w < 50:
+                st.error("Image too small. Please upload a larger image.")
+                st.stop()
             
             # More aggressive handling for extremely large images
             if h * w > 8000 * 8000:
                 st.warning("Image is extremely large and will be automatically resized.")
-                image, new_width, new_height = resize_with_aspect_ratio(image, target_width=2000)
-                image_np = np.array(image, dtype=np.uint8)
-                h, w = new_height, new_width
+                try:
+                    image, new_width, new_height = resize_with_aspect_ratio(image, target_width=2000)
+                    image_np = np.array(image, dtype=np.uint8)
+                    h, w = new_height, new_width
+                except Exception as e:
+                    st.error(f"Error resizing large image: {str(e)}")
+                    st.stop()
+                    
     except Exception as e:
         st.error(f"Error loading image: {str(e)}")
+        st.info("Please try uploading a different image or refresh the page.")
         st.stop()
 
     # --- Detect large image and prompt for quality ---
@@ -108,10 +143,14 @@ if uploaded_file:
     # --- Downscale if needed ---
     if quality_choice == "Normal (recommended)":
         max_dim = 800  # Reduce further for faster processing
-        image, new_width, new_height = resize_with_aspect_ratio(image, target_width=max_dim)
-        image_np = np.array(image)
-        h, w = new_height, new_width
-        st.info(f"Image downscaled to {w}x{h} for faster processing.")
+        try:
+            image, new_width, new_height = resize_with_aspect_ratio(image, target_width=max_dim)
+            image_np = np.array(image)
+            h, w = new_height, new_width
+            st.info(f"Image downscaled to {w}x{h} for faster processing.")
+        except Exception as e:
+            st.error(f"Error downscaling image: {str(e)}")
+            st.stop()
 
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
@@ -121,6 +160,12 @@ if uploaded_file:
         with st.spinner("Preparing canvas..."):
             # Use the cached function to create display image
             display_image, display_width, display_height = create_display_image(image)
+            
+            # Validate canvas dimensions
+            if display_width <= 0 or display_height <= 0:
+                st.error("Invalid image dimensions for canvas display.")
+                st.stop()
+                
     except Exception as e:
         st.error(f"Error preparing image for display: {str(e)}")
         st.info("Try using a different image format or a smaller image.")
@@ -381,7 +426,7 @@ if uploaded_file:
                 st.error(f"Error displaying samples: {str(e)}")
                 # Reset samples if corrupted
                 st.session_state.samples = []
-                st.experimental_rerun()
+                st.rerun()
 
             # Safe delete implementation with better state management
             st.markdown("#### Remove Samples")
@@ -402,12 +447,12 @@ if uploaded_file:
                             for i, sample in enumerate(st.session_state.samples):
                                 sample["Sample #"] = i + 1
                             st.success(f"Deleted sample {deleted_sample['Sample #']}")
-                            st.experimental_rerun()
+                            st.rerun()
                 with col2:
                     if st.button("🗑️ Clear All Samples", key="clear_all"):
                         st.session_state.samples = []
                         st.success("All samples cleared!")
-                        st.experimental_rerun()
+                        st.rerun()
 
             # --- CSV export with custom filename ---
             csv_filename = st.text_input(
