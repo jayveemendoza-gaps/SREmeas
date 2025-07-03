@@ -14,46 +14,16 @@ st.set_page_config(
 )
 st.title("🍋 Mango SER meas")
 
-# Enhanced cache for image loading with better parameters
-@st.cache_data(ttl=3600, max_entries=2)
+# Simplified image loading without caching that can cause issues
 def load_image(file_bytes):
-    """Cache image loading to avoid repeated processing of the same image."""
+    """Load image from bytes with error handling."""
     try:
         image = Image.open(io.BytesIO(file_bytes))
-        # Ensure image is in RGB mode
         if image.mode != 'RGB':
             image = image.convert('RGB')
         return image
-    except Exception as e:
-        # Don't call st.error() inside cached function - return None instead
+    except Exception:
         return None
-
-# Optimized display image creation for canvases
-@st.cache_data
-def create_display_image(image, target_width=800):
-    """Create a properly sized display image for canvas backgrounds."""
-    display_img, width, height = resize_with_aspect_ratio(image, target_width)
-    return display_img, width, height
-
-@st.cache_data
-def convert_to_hsv(_image_np):
-    """Cache HSV conversion to avoid recomputation. Use underscore to ignore hash."""
-    return cv2.cvtColor(_image_np, cv2.COLOR_RGB2HSV)
-
-@st.cache_data
-def apply_color_mask(_hsv_img, _lower, _upper, _user_mask=None):
-    """Cache mask application to avoid recomputation."""
-    mask = cv2.inRange(_hsv_img, _lower, _upper)
-    if _user_mask is not None:
-        mask = (mask == 255) & _user_mask
-    return mask
-
-# Add this new cached function for efficient mask calculations
-@st.cache_data
-def calculate_areas(_mask1, _mask2):
-    """Cache area calculations for better performance."""
-    combined = _mask1 | _mask2
-    return np.sum(combined), np.sum(_mask2)
 
 def resize_with_aspect_ratio(image, target_width=800):
     """Resize an image while maintaining its aspect ratio."""
@@ -67,6 +37,29 @@ def resize_with_aspect_ratio(image, target_width=800):
         new_width = int(target_width * aspect_ratio)
     return image.resize((new_width, new_height), Image.LANCZOS), new_width, new_height
 
+# Remove caching from this function to prevent dependency issues
+def create_display_image(image, target_width=800):
+    """Create a properly sized display image for canvas backgrounds."""
+    display_img, width, height = resize_with_aspect_ratio(image, target_width)
+    return display_img, width, height
+
+def convert_to_hsv(_image_np):
+    """Cache HSV conversion to avoid recomputation. Use underscore to ignore hash."""
+    return cv2.cvtColor(_image_np, cv2.COLOR_RGB2HSV)
+
+def apply_color_mask(_hsv_img, _lower, _upper, _user_mask=None):
+    """Cache mask application to avoid recomputation."""
+    mask = cv2.inRange(_hsv_img, _lower, _upper)
+    if _user_mask is not None:
+        mask = (mask == 255) & _user_mask
+    return mask
+
+# Simplified area calculation without caching
+def calculate_areas(mask1, mask2):
+    """Calculate areas for better performance."""
+    combined = mask1 | mask2
+    return np.sum(combined), np.sum(mask2)
+
 # Add proper file upload guidance
 uploaded_file = st.file_uploader(
     "Upload an image of mangoes (top view)", 
@@ -75,56 +68,40 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file:
-    # Initialize session state at the very beginning
+    # Initialize session state
     if "samples" not in st.session_state:
         st.session_state.samples = []
     
-    # Optimize image loading with better error handling
+    # Simplified image loading
     try:
-        with st.spinner("Loading image..."):
-            # Cache the file content to avoid rereading on rerun
-            file_bytes = uploaded_file.getvalue()
+        file_bytes = uploaded_file.getvalue()
+        
+        # Basic validations
+        if len(file_bytes) == 0:
+            st.error("Empty file uploaded.")
+            st.stop()
             
-            # Validate file size first
-            if len(file_bytes) > 50 * 1024 * 1024:  # 50MB limit
-                st.error("File too large. Please upload an image smaller than 50MB.")
-                st.stop()
+        if len(file_bytes) > 50 * 1024 * 1024:  # 50MB
+            st.error("File too large. Maximum 50MB.")
+            st.stop()
+        
+        # Load image
+        image = load_image(file_bytes)
+        if image is None:
+            st.error("Cannot load image. Please try a different file.")
+            st.stop()
+        
+        # Convert to array
+        image_np = np.array(image, dtype=np.uint8)
+        h, w = image_np.shape[:2]
+        
+        # Basic dimension check
+        if h < 10 or w < 10:
+            st.error("Image too small.")
+            st.stop()
             
-            # Basic file validation
-            if len(file_bytes) == 0:
-                st.error("Empty file. Please upload a valid image.")
-                st.stop()
-                
-            image = load_image(file_bytes)
-            if image is None:
-                st.error("Could not load the image. Please check the file format and try again.")
-                st.stop()
-                
-            # Convert to numpy array with proper error handling
-            image_np = np.array(image, dtype=np.uint8)
-            
-            # Validate array conversion
-            if image_np.size == 0:
-                st.error("Invalid image data. Please try a different image.")
-                st.stop()
-                
-            h, w = image_np.shape[:2]
-            
-            # Validate image dimensions
-            if h < 50 or w < 50:
-                st.error("Image too small. Please upload a larger image (minimum 50x50 pixels).")
-                st.stop()
-            
-            # More aggressive handling for extremely large images
-            if h * w > 8000 * 8000:
-                st.warning("Image is extremely large and will be automatically resized.")
-                image, new_width, new_height = resize_with_aspect_ratio(image, target_width=2000)
-                image_np = np.array(image, dtype=np.uint8)
-                h, w = new_height, new_width
-                    
     except Exception as e:
-        st.error(f"Error loading image: {str(e)}")
-        st.info("Please try uploading a different image or refresh the page.")
+        st.error(f"Error: {str(e)}")
         st.stop()
 
     # --- Detect large image and prompt for quality ---
@@ -153,20 +130,11 @@ if uploaded_file:
     # --- Step 1: Set scale ---
     st.markdown("## 1️⃣ Draw a line on the scale bar in the image")
     
-    # Optimize display image creation for scale canvas
+    # Create display image without caching
     try:
-        with st.spinner("Preparing canvas..."):
-            # Use the cached function to create display image
-            display_image, display_width, display_height = create_display_image(image)
-            
-            # Validate canvas dimensions
-            if display_width <= 0 or display_height <= 0:
-                st.error("Invalid image dimensions for canvas display.")
-                st.stop()
-                
+        display_image, display_width, display_height = create_display_image(image)
     except Exception as e:
-        st.error(f"Error preparing image for display: {str(e)}")
-        st.info("Try using a different image format or a smaller image.")
+        st.error(f"Error preparing display: {str(e)}")
         st.stop()
     
     # Use st.container to reduce redraws and improve canvas performance
@@ -317,7 +285,7 @@ if uploaded_file:
                 hsv_mask_crop = (hsv_mask_crop == 255) & crop_mask
                 lesion_mask_crop = (lesion_mask_crop == 255) & crop_mask
                 
-                # Calculate areas directly from cropped boolean arrays
+                # Calculate areas without caching
                 mango_area_px, lesion_area_px = calculate_areas(hsv_mask_crop, lesion_mask_crop)
                 
                 # Create full-size masks for display (only if needed)
@@ -410,21 +378,10 @@ if uploaded_file:
                     st.error(f"Error adding sample: {str(e)}")
 
         if st.session_state.samples:
-            # Compute dataframe once and cache it
-            @st.cache_data
-            def get_samples_df(samples):
-                return pd.DataFrame(samples)
-                
-            all_samples_df = get_samples_df(st.session_state.samples)
+            # Simplified samples dataframe
+            all_samples_df = pd.DataFrame(st.session_state.samples)
             st.markdown("### 🥭 All Mango Samples")
-            try:
-                # Cache the dataframe creation to avoid redundant operations
-                st.dataframe(all_samples_df, use_container_width=True)
-            except Exception as e:
-                st.error(f"Error displaying samples: {str(e)}")
-                # Reset samples if corrupted
-                st.session_state.samples = []
-                st.rerun()
+            st.dataframe(all_samples_df, use_container_width=True)
 
             # Safe delete implementation with better state management
             st.markdown("#### Remove Samples")
@@ -460,12 +417,8 @@ if uploaded_file:
             
             # Use a try/except block to handle CSV export errors
             try:
-                # Create CSV on-demand rather than keeping it in memory
-                @st.cache_data
-                def get_csv(_df):
-                    return _df.to_csv(index=False).encode()
-                    
-                csv = get_csv(all_samples_df)
+                # Simplified CSV creation
+                csv = all_samples_df.to_csv(index=False).encode()
                 st.download_button(
                     "📥 Download All Samples as CSV",
                     csv,
