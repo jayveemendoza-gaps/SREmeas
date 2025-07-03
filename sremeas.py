@@ -241,7 +241,7 @@ if uploaded_file:
             if drawing_mode == "transform":
                 st.info("🔄 **Transform Mode**: Click and drag shapes to move, drag corners/edges to resize. Analysis updates automatically.")
             elif drawing_mode == "polygon":
-                st.info("📐 **Polygon Mode**: Click to place points, double-click to close polygon. Perfect for irregular mango shapes.")
+                st.info("📐 **Polygon Mode**: Click to place points, double-click to close polygon. Perfect for irregular mango shapes. Press transform to adjust and process image")
             else:
                 st.info(f"✏️ **{drawing_mode.title()} Mode**: Draw a new {drawing_mode} around the mango.")
             
