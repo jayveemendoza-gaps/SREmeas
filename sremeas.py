@@ -4,11 +4,21 @@ import numpy as np
 import cv2
 import pandas as pd
 from PIL import Image, ImageEnhance
+import io
 
-st.set_page_config(layout="wide")
+# Use a better page config with caching hints
+st.set_page_config(
+    layout="wide",
+    page_title="Mango SER meas",
+    page_icon="🍋"
+)
 st.title("🍋 Mango SER meas")
 
-uploaded_file = st.file_uploader("Upload an image of mangoes (top view)", type=["png", "jpg", "jpeg"])
+# Enhanced cache for image loading to speed up repeated uploads
+@st.cache_data(ttl=3600)
+def load_image(file_bytes):
+    """Cache image loading to avoid repeated processing of the same image."""
+    return Image.open(io.BytesIO(file_bytes)).convert("RGB")
 
 @st.cache_data
 def convert_to_hsv(_image_np):
@@ -23,6 +33,13 @@ def apply_color_mask(_hsv_img, _lower, _upper, _user_mask=None):
         mask = (mask == 255) & _user_mask
     return mask
 
+# Add this new cached function for efficient mask calculations
+@st.cache_data
+def calculate_areas(_mask1, _mask2):
+    """Cache area calculations for better performance."""
+    combined = _mask1 | _mask2
+    return np.sum(combined), np.sum(_mask2)
+
 def resize_with_aspect_ratio(image, target_width=800):
     """Resize an image while maintaining its aspect ratio."""
     w, h = image.size
@@ -35,16 +52,32 @@ def resize_with_aspect_ratio(image, target_width=800):
         new_width = int(target_width * aspect_ratio)
     return image.resize((new_width, new_height), Image.LANCZOS), new_width, new_height
 
+# Add proper file upload guidance
+uploaded_file = st.file_uploader(
+    "Upload an image of mangoes (top view)", 
+    type=["png", "jpg", "jpeg"],
+    help="For best results, use a clear image with good lighting"
+)
+
 if uploaded_file:
     # Initialize session state at the very beginning
     if "samples" not in st.session_state:
         st.session_state.samples = []
     
-    # Use try-except for robust image loading
+    # Use try-except for robust image loading with caching
     try:
-        image = Image.open(uploaded_file).convert("RGB")  # Ensure no alpha channel
+        # Cache the file content to avoid rereading on rerun
+        file_bytes = uploaded_file.getvalue()
+        image = load_image(file_bytes)
         image_np = np.array(image)
         h, w = image_np.shape[:2]
+        
+        # Add automatic limit for extremely large images
+        if h * w > 8000 * 8000:
+            st.warning("Image is extremely large and will be automatically resized.")
+            image, new_width, new_height = resize_with_aspect_ratio(image, target_width=2000)
+            image_np = np.array(image)
+            h, w = new_height, new_width
     except Exception as e:
         st.error(f"Error loading image: {str(e)}")
         st.stop()
@@ -135,8 +168,10 @@ if uploaded_file:
         # Use brightness-adjusted image for display only
         brightness_display_image, _, _ = resize_with_aspect_ratio(brightness_adjusted_image, target_width=800)
 
+        # --- Step 3: Draw around a mango ---
         st.markdown("## 3️⃣ Draw around a mango (one at a time)")
         
+        # Keep the drawing mode selection exactly as is to avoid canvas crashes
         drawing_mode = st.selectbox(
             "Drawing mode", 
             ["circle", "rect", "freedraw", "transform"], 
@@ -167,10 +202,9 @@ if uploaded_file:
             )
 
         if canvas_result.image_data is not None and np.any(canvas_result.image_data != 255):
-            # Show processing indicator
-            with st.spinner("Processing mango area..."):
-                # Get user mask first (much faster)
-                # Use uint8 instead of bool for masks to save memory
+            # Show a more informative processing indicator
+            with st.spinner("Processing mango area... (this may take a moment on slow connections)"):
+                # Optimize mask processing with numpy operations
                 mask = canvas_result.image_data[:, :, 3]  # Use alpha channel directly
                 user_mask = mask > 10
                 
@@ -179,15 +213,15 @@ if uploaded_file:
                     st.warning("No area selected. Please draw on the mango.")
                     st.stop()
                 
-                # Get bounding box to reduce processing area
-                y_coords, x_coords = np.where(user_mask)
-                if len(y_coords) == 0:
+                # Optimize bounding box calculation
+                y_indices, x_indices = np.nonzero(user_mask)
+                if len(y_indices) == 0:
                     st.warning("No valid area selected.")
                     st.stop()
                 
-                # Calculate bbox with vectorized operations (faster)
-                y_min, y_max = np.min(y_coords), np.max(y_coords) + 1
-                x_min, x_max = np.min(x_coords), np.max(x_coords) + 1
+                # Use numpy min/max for faster bounds calculation
+                y_min, y_max = np.min(y_indices), np.max(y_indices) + 1
+                x_min, x_max = np.min(x_indices), np.max(x_indices) + 1
                 
                 # Safety bounds check
                 y_min, y_max = max(0, y_min), min(brightness_adjusted_np.shape[0], y_max)
@@ -220,8 +254,7 @@ if uploaded_file:
                 lesion_mask_crop = (lesion_mask_crop == 255) & crop_mask
                 
                 # Calculate areas directly from cropped boolean arrays
-                mango_area_px = np.sum(hsv_mask_crop | lesion_mask_crop)
-                lesion_area_px = np.sum(lesion_mask_crop)
+                mango_area_px, lesion_area_px = calculate_areas(hsv_mask_crop, lesion_mask_crop)
                 
                 # Create full-size masks for display (only if needed)
                 mango_mask = np.zeros_like(user_mask, dtype=np.uint8)
@@ -246,9 +279,24 @@ if uploaded_file:
                                                      interpolation=cv2.INTER_NEAREST)
                 
                 # Now safely assign to the full mask
-                mango_mask[y_min:y_max, x_min:x_max] = combined_mask
-                lesion_mask[y_min:y_max, x_min:x_max] = lesion_display_mask
+                try:
+                    mango_mask[y_min:y_max, x_min:x_max] = combined_mask
+                    lesion_mask[y_min:y_max, x_min:x_max] = lesion_display_mask
+                except ValueError as e:
+                    # Fallback for broadcasting errors
+                    st.warning("Adjusting mask dimensions...")
+                    # Force dimensions to match exactly
+                    target_height, target_width = y_max - y_min, x_max - x_min
+                    combined_mask = cv2.resize(combined_mask, (target_width, target_height), 
+                                            interpolation=cv2.INTER_NEAREST)
+                    lesion_display_mask = cv2.resize(lesion_display_mask, (target_width, target_height),
+                                                  interpolation=cv2.INTER_NEAREST)
+                    mango_mask[y_min:y_max, x_min:x_max] = combined_mask
+                    lesion_mask[y_min:y_max, x_min:x_max] = lesion_display_mask
                 
+            # Add a status indicator for better feedback
+            st.success("Processing complete! Review the results below.")
+            
             # Convert pixel areas to mm² with comprehensive safety checks
             try:
                 if mm_per_px <= 0:
@@ -274,11 +322,12 @@ if uploaded_file:
                 st.error(f"Error in area calculation: {str(e)}")
                 st.stop()
 
-            # Display results
+            # Display results - use more efficient image display
             st.markdown("### 🟩 Selected Mango & Lesions")
             col1, col2 = st.columns(2)
-            col1.image(mango_mask, caption="Total Mango Area (Green/Yellow + Lesions)", use_column_width=True)
-            col2.image(lesion_mask, caption="Lesion Area (Black/Brown)", use_column_width=True)
+            # Convert masks to uint8 before display (more efficient)
+            col1.image(mango_mask.astype(np.uint8), caption="Total Mango Area", use_column_width=True)
+            col2.image(lesion_mask.astype(np.uint8), caption="Lesion Area", use_column_width=True)
 
             result = {
                 "Sample #": len(st.session_state.samples) + 1,
@@ -297,10 +346,15 @@ if uploaded_file:
                     st.error(f"Error adding sample: {str(e)}")
 
         if st.session_state.samples:
+            # Compute dataframe once and cache it
+            @st.cache_data
+            def get_samples_df(samples):
+                return pd.DataFrame(samples)
+                
+            all_samples_df = get_samples_df(st.session_state.samples)
             st.markdown("### 🥭 All Mango Samples")
             try:
                 # Cache the dataframe creation to avoid redundant operations
-                all_samples_df = pd.DataFrame(st.session_state.samples)
                 st.dataframe(all_samples_df, use_container_width=True)
             except Exception as e:
                 st.error(f"Error displaying samples: {str(e)}")
@@ -340,18 +394,25 @@ if uploaded_file:
                 value="mango_lesion_samples"
             )
             
-            # Create CSV on-demand rather than keeping it in memory
-            @st.cache_data
-            def get_csv(_df):
-                return _df.to_csv(index=False).encode()
-                
-            csv = get_csv(all_samples_df)
-            st.download_button(
-                "📥 Download All Samples as CSV",
-                csv,
-                f"{csv_filename}.csv",
-                "text/csv"
-            )
+            # Use a try/except block to handle CSV export errors
+            try:
+                # Create CSV on-demand rather than keeping it in memory
+                @st.cache_data
+                def get_csv(_df):
+                    return _df.to_csv(index=False).encode()
+                    
+                csv = get_csv(all_samples_df)
+                st.download_button(
+                    "📥 Download All Samples as CSV",
+                    csv,
+                    f"{csv_filename}.csv",
+                    "text/csv"
+                )
+            except Exception as e:
+                st.error(f"Error preparing CSV: {str(e)}")
+else:
+    # Show helpful guidance when no file is uploaded
+    st.info("👆 Upload an image to get started with mango measurements")
 
 # --- Footer ---
 st.markdown("""
