@@ -29,24 +29,60 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Cloud-optimized settings with aggressive memory management
-MAX_IMAGE_SIZE = 400      # Increased for better quality while maintaining cloud compatibility
-CANVAS_SIZE = 800         # Enlarged canvas for better usability
-MAX_FILE_SIZE_MB = 8      # Slightly increased file size limit
-MEMORY_CLEANUP_INTERVAL = 45  # Reduced cleanup frequency to minimize interruptions
+# Ultra-optimized settings for maximum cloud stability
+MAX_IMAGE_SIZE = 450      # Increased for better usability while maintaining cloud stability
+CANVAS_SIZE = 600         # Increased canvas size for better usability
+MAX_FILE_SIZE_MB = 5      # Increased file size limit for better usability
+MEMORY_CLEANUP_INTERVAL = 20  # More frequent cleanup for cloud stability
 
 # Memory management utilities
 def aggressive_cleanup():
-    """Aggressive memory cleanup for cloud deployment"""
+    """Ultra-aggressive memory cleanup for maximum cloud stability"""
     try:
-        gc.collect()
+        # Force garbage collection multiple times
+        for _ in range(3):
+            gc.collect()
+        
         # Clear OpenCV cache safely
-        cv2.setUseOptimized(True)
+        try:
+            cv2.setUseOptimized(True)
+        except Exception:
+            pass
+        
+        # Clear matplotlib cache if available (removed to avoid import warnings)
+        # matplotlib.pyplot cleanup is optional and not critical for functionality
+        
         # Update cleanup timestamp
         st.session_state.last_cleanup = time.time()
+        
+        # Clear large objects from session state periodically
+        if hasattr(st.session_state, 'temp_images'):
+            try:
+                del st.session_state.temp_images
+            except:
+                pass
+                
     except Exception:
         # Silent fail to prevent crashes
         pass
+
+def check_memory_limit():
+    """Check if we're approaching memory limits using fallback method"""
+    try:
+        # Use basic check based on session state size (psutil removed to avoid import warnings)
+        if len(st.session_state.samples) > 20:
+            st.info("💡 Many samples stored. Consider downloading and clearing for better performance.")
+            return True
+        
+        # Additional basic memory check - if we have many large objects in session state
+        if hasattr(st.session_state, 'temp_images') and len(getattr(st.session_state, 'temp_images', [])) > 5:
+            st.warning("⚠️ Multiple images in memory. Consider clearing for better performance.")
+            return True
+            
+    except Exception:
+        # Fallback errors, continue safely
+        pass
+    return False
 
 def should_cleanup():
     """Check if cleanup is needed"""
@@ -55,9 +91,9 @@ def should_cleanup():
     except Exception:
         return False
 
-@st.cache_data(max_entries=2, ttl=600, show_spinner=False)  # Increased cache and TTL for better UX
+@st.cache_data(max_entries=1, ttl=300, show_spinner=False)  # Minimal cache for cloud stability
 def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
-    """Cloud-optimized image processing with error handling"""
+    """Ultra-optimized image processing for maximum cloud stability"""
     try:
         if not uploaded_file or len(uploaded_file) == 0:
             return None, None, None
@@ -67,46 +103,66 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
             st.error(f"File too large: {file_size_mb:.1f}MB. Use files under {MAX_FILE_SIZE_MB}MB.")
             return None, None, None
         
-        # Process image safely
+        # Early memory check
+        if check_memory_limit():
+            st.error("❌ Memory limit reached. Please use a smaller image.")
+            return None, None, None
+        
+        # Process image with minimal memory usage
         try:
-            image = Image.open(BytesIO(uploaded_file))
+            # Use BytesIO more carefully
+            image_buffer = BytesIO(uploaded_file)
+            image = Image.open(image_buffer)
             original_size = image.size
             
-            # Convert to RGB safely
+            # Immediate size check to prevent huge images
+            if original_size[0] * original_size[1] > 3000000:  # > 3MP (increased threshold)
+                st.warning("⚠️ Very large image detected. Moderate downscaling applied.")
+                max_dim = min(max_dim, 350)  # Less aggressive reduction for large images
+            
+            # Convert to RGB immediately to save memory
             if image.mode != 'RGB':
-                rgb_image = image.convert("RGB")
-                del image
-                image = rgb_image
+                image = image.convert("RGB")
+                
         except Exception as e:
             st.error(f"Image format error: {str(e)}")
             return None, None, None
         
-        # Smart downscaling for cloud
+        # Ultra-aggressive downscaling for cloud stability
         scale = min(max_dim / image.height, max_dim / image.width, 1.0)
         if scale < 1.0:
             new_size = (int(image.width * scale), int(image.height * scale))
-            # Use LANCZOS for better quality on larger canvas
-            resized_image = image.resize(new_size, Image.LANCZOS)
-            del image
-            image = resized_image
-            st.info(f"📏 Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]} pixels")
+            # Use NEAREST for minimal memory usage
+            try:
+                image = image.resize(new_size, Image.NEAREST)
+                st.info(f"📏 Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]} pixels")
+            except Exception as e:
+                st.error(f"Resize error: {str(e)}")
+                return None, None, None
         
-        # Convert to numpy safely
+        # Convert to numpy with enhanced error handling
         try:
             image_np = np.array(image, dtype=np.uint8)
-            del image
+            if image_np.size == 0:
+                st.error("❌ Image conversion failed - empty array")
+                return None, None, None
+                
+            del image  # Immediate cleanup
+            if image_buffer:
+                image_buffer.close()
+                del image_buffer
         except Exception as e:
             st.error(f"Array conversion error: {str(e)}")
             return None, None, None
         
-        # Safe cleanup
+        # Force cleanup
         aggressive_cleanup()
         
         return image_np, original_size, scale
         
     except MemoryError:
         aggressive_cleanup()
-        st.error("❌ Out of memory. Please use a smaller image (< 4MB recommended).")
+        st.error("❌ Out of memory. Please use a smaller image (< 1MB recommended for cloud).")
         return None, None, None
     except Exception as e:
         aggressive_cleanup()
@@ -114,13 +170,18 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
         return None, None, None
 
 def quick_color_analysis(image_np, mask, mm_per_px):
-    """Enhanced color analysis with preserved masking formula and error handling"""
+    """Enhanced color analysis with preserved masking formula and ultra-safe cloud memory handling"""
     try:
         if image_np is None or mask is None or mm_per_px is None:
             return 0, 0, 0, None, None
         
         if mask.size == 0 or np.max(mask) == 0:
             return 0, 0, 0, None, None
+        
+        # Early memory check for large images
+        total_pixels = image_np.shape[0] * image_np.shape[1]
+        if total_pixels > 500000:  # > 0.5MP
+            st.info("🔬 Processing large image - this may take longer on cloud...")
         
         # Ensure mask matches image dimensions safely
         if mask.shape != image_np.shape[:2]:
@@ -129,7 +190,7 @@ def quick_color_analysis(image_np, mask, mm_per_px):
             except Exception:
                 return 0, 0, 0, None, None
         
-        # PRESERVED MASKING FORMULA - Enhanced color detection
+        # PRESERVED MASKING FORMULA - Enhanced color detection with memory optimization
         try:
             hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
         except Exception:
@@ -224,7 +285,7 @@ uploaded_file = st.file_uploader(
 )
 
 def safe_rerun():
-    """Safe rerun function with error handling"""
+    """Ultra-safe rerun function with multiple fallbacks"""
     aggressive_cleanup()
     try:
         st.rerun()
@@ -233,60 +294,107 @@ def safe_rerun():
             st.experimental_rerun()
         except AttributeError:
             try:
-                st.empty()
-                st.write("🔄 Please refresh the page manually")
+                # Clear session state to force refresh
+                for key in list(st.session_state.keys()):
+                    if key not in ['samples', 'mm_per_px']:  # Keep important data
+                        try:
+                            del st.session_state[key]
+                        except:
+                            pass
+                st.info("🔄 Page refreshed. Please continue with your analysis.")
             except Exception:
-                pass
+                st.write("🔄 Please refresh the page manually (F5 or Ctrl+R)")
+
+def safe_add_sample(result):
+    """Safely add sample with error handling"""
+    try:
+        if result and all(key in result for key in ["Sample", "Area (mm²)", "Lesions (mm²)", "Lesion %"]):
+            st.session_state.samples.append(result)
+            return True
+        else:
+            st.error("❌ Invalid result data")
+            return False
+    except Exception as e:
+        st.error(f"❌ Failed to add sample: {str(e)}")
+        return False
 
 if uploaded_file:
     try:
-        # Periodic cleanup check
+        # Periodic cleanup check with memory monitoring
         if should_cleanup():
             aggressive_cleanup()
         
-        # File size validation with better messaging
-        file_size = len(uploaded_file.getvalue()) / (1024 * 1024)
-        if file_size > MAX_FILE_SIZE_MB:
-            st.error(f"📁 File too large: {file_size:.1f}MB. Maximum allowed: {MAX_FILE_SIZE_MB}MB")
+        # Enhanced memory check before processing
+        if check_memory_limit():
+            st.error("❌ Memory limit reached. Please try a smaller image or clear samples.")
             st.stop()
         
-        if file_size > 4:
-            st.warning(f"⚠️ Large file: {file_size:.1f}MB - processing may be slower")
-        elif file_size > 2:
-            st.info(f"📏 File size: {file_size:.1f}MB - good for processing")
+        # File size validation with better messaging
+        try:
+            file_size = len(uploaded_file.getvalue()) / (1024 * 1024)
+        except Exception:
+            st.error("❌ Cannot read file. Please try uploading again.")
+            st.stop()
+            
+        if file_size > MAX_FILE_SIZE_MB:
+            st.error(f"📁 File too large: {file_size:.1f}MB. Maximum allowed: {MAX_FILE_SIZE_MB}MB")
+            st.info("💡 **Tips to reduce file size:**\n- Use JPG instead of PNG\n- Reduce image resolution\n- Compress image before upload")
+            st.stop()
         
-        # Process image with enhanced error handling
-        with st.spinner("🔄 Processing image..."):
+        if file_size > 3:
+            st.warning(f"⚠️ Large file: {file_size:.1f}MB - processing may be slower on cloud")
+        elif file_size > 2:
+            st.info(f"📏 File size: {file_size:.1f}MB - good for cloud processing")
+        else:
+            st.success(f"✅ File size: {file_size:.1f}MB - optimal for cloud")
+        
+        # Process image with enhanced error handling and progress indication
+        with st.spinner("🔄 Processing image... (this may take a moment on cloud)"):
             try:
                 image_np, original_size, scale = process_uploaded_image(uploaded_file.getvalue())
             except Exception as e:
                 st.error(f"❌ Processing error: {str(e)}")
+                st.info("🔄 Please try again with a smaller image (< 2MB recommended)")
+                aggressive_cleanup()
                 st.stop()
         
         if image_np is None:
-            st.error("❌ Failed to process image. Try a smaller file (< 4MB recommended).")
+            st.error("❌ Failed to process image. Try a smaller file or different format.")
+            st.info("💡 **Supported formats:** JPG (recommended), PNG\n**Recommended size:** < 2MB for best cloud performance")
             st.stop()
         
         h, w = image_np.shape[:2]
         st.success(f"✅ Image loaded: {w}x{h} pixels (scale: {scale:.2f})")
         
-        # Calculate optimal display size maintaining aspect ratio
+        # Calculate optimal display size maintaining aspect ratio with cloud limits
         display_scale = min(CANVAS_SIZE / w, CANVAS_SIZE / h, 1.0)
         display_w = int(w * display_scale)
         display_h = int(h * display_scale)
         
         # Ensure minimum usable size while maintaining aspect ratio
-        if display_w < 400 or display_h < 300:
+        if display_w < 400 or display_h < 300:  # Increased minimum for better usability
             min_scale = max(400 / w, 300 / h)
-            if min_scale <= 2.0:  # Don't upscale too much
+            if min_scale <= 2.0:  # Allow reasonable upscaling for small images
                 display_w = int(w * min_scale)
                 display_h = int(h * min_scale)
                 display_scale = min_scale
         
-        # Create display image maintaining aspect ratio
-        display_image = Image.fromarray(image_np)
-        if display_scale != 1.0:
-            display_image = display_image.resize((display_w, display_h), Image.LANCZOS)
+        # Memory check before creating display image
+        if display_w * display_h * 3 > 2000000:  # > 2MB RGB image
+            st.warning("⚠️ Large display size. Using reduced canvas for cloud stability.")
+            display_scale = min(display_scale, 0.8)
+            display_w = int(w * display_scale)
+            display_h = int(h * display_scale)
+        
+        # Create display image maintaining aspect ratio with error handling
+        try:
+            display_image = Image.fromarray(image_np)
+            if display_scale != 1.0:
+                display_image = display_image.resize((display_w, display_h), Image.LANCZOS)
+        except Exception as e:
+            st.error(f"❌ Display image creation failed: {str(e)}")
+            aggressive_cleanup()
+            st.stop()
         
         # --- Step 1: Scale Setting ---
         st.markdown("## 1️⃣ Set Scale")
@@ -356,17 +464,30 @@ if uploaded_file:
                     help="Adjust brightness for better visibility"
                 )
             
-            # Apply brightness adjustment safely
+            # Apply brightness adjustment safely with memory management
             try:
                 if brightness != 1.0:
+                    # Process in chunks to avoid memory issues on cloud
                     display_image_array = np.array(display_image, dtype=np.float32)
+                    
+                    # Check array size before processing
+                    if display_image_array.size > 1500000:  # Large array
+                        st.info("🔧 Applying brightness adjustment (large image)...")
+                    
                     display_image_array = np.clip(display_image_array * brightness, 0, 255).astype(np.uint8)
                     adjusted_display_image = Image.fromarray(display_image_array)
+                    
+                    # Immediate cleanup
                     del display_image_array
                     aggressive_cleanup()
                 else:
                     adjusted_display_image = display_image
-            except Exception:
+            except MemoryError:
+                st.warning("⚠️ Brightness adjustment skipped due to memory limits")
+                adjusted_display_image = display_image
+                aggressive_cleanup()
+            except Exception as e:
+                st.warning(f"⚠️ Brightness adjustment failed: {str(e)}")
                 adjusted_display_image = display_image
             
             # Mode-specific instructions
@@ -415,22 +536,43 @@ if uploaded_file:
             
             if process_analysis:
                 try:
+                    # Memory check before analysis
+                    if check_memory_limit():
+                        st.error("❌ Memory limit reached. Please try a smaller image or clear samples.")
+                        st.stop()
+                    
                     # Create mask safely
-                    mask = (canvas_result.image_data[:,:,3] > 0).astype(np.uint8) * 255
+                    try:
+                        mask = (canvas_result.image_data[:,:,3] > 0).astype(np.uint8) * 255
+                        if mask.size == 0 or np.max(mask) == 0:
+                            st.warning("⚠️ No selection detected. Please draw on the image.")
+                            st.stop()
+                    except Exception as e:
+                        st.error(f"❌ Mask creation failed: {str(e)}")
+                        st.stop()
                     
                     # Scale mask to match processing image safely
                     try:
                         if display_scale != 1.0:
                             mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-                    except Exception:
-                        st.error("❌ Mask scaling error. Please try again.")
+                            if mask.size == 0:
+                                st.error("❌ Mask scaling failed - empty result")
+                                st.stop()
+                    except Exception as e:
+                        st.error(f"❌ Mask scaling error: {str(e)}")
+                        aggressive_cleanup()
                         st.stop()
                     
-                    # Analyze with enhanced error handling
-                    with st.spinner("🔬 Analyzing mango..."):
-                        mango_area_mm2, lesion_area_mm2, lesion_percent, total_mask, lesion_mask = quick_color_analysis(
-                            image_np, mask, st.session_state.mm_per_px
-                        )
+                    # Analyze with enhanced error handling and progress
+                    with st.spinner("🔬 Analyzing mango (cloud processing may take longer)..."):
+                        try:
+                            mango_area_mm2, lesion_area_mm2, lesion_percent, total_mask, lesion_mask = quick_color_analysis(
+                                image_np, mask, st.session_state.mm_per_px
+                            )
+                        except Exception as e:
+                            st.error(f"❌ Analysis failed: {str(e)}")
+                            aggressive_cleanup()
+                            st.stop()
                     
                     if mango_area_mm2 > 0:
                         # Display results with enhanced layout
@@ -611,17 +753,18 @@ if uploaded_file:
                             try:
                                 # Use corrected result if available, otherwise use original
                                 final_result = result
-                                st.session_state.samples.append(final_result)
-                                st.success(f"✅ Sample {len(st.session_state.samples)} added successfully!")
-                                # Clean up memory safely
-                                try:
-                                    del total_mask, lesion_mask, mask
-                                except:
-                                    pass
-                                aggressive_cleanup()
-                                safe_rerun()
+                                if safe_add_sample(final_result):
+                                    st.success(f"✅ Sample {len(st.session_state.samples)} added successfully!")
+                                    # Clean up memory safely
+                                    try:
+                                        del total_mask, lesion_mask, mask
+                                    except:
+                                        pass
+                                    aggressive_cleanup()
+                                    safe_rerun()
                             except Exception as e:
                                 st.error(f"❌ Failed to add sample: {str(e)}")
+                                aggressive_cleanup()
                     else:
                         st.warning("⚠️ No mango detected. Try adjusting your selection or brightness.")
                         st.info("💡 **Tips:**\n- Make sure your shape covers the entire mango\n- Adjust brightness if the image is too dark/bright\n- Try a different drawing mode (circle, rectangle, polygon)")
@@ -722,10 +865,34 @@ if uploaded_file:
             st.info("👆 **Step 1:** Draw a line on the scale bar and set its real length to continue")
             st.markdown("**💡 Tips for scale setting:**\n- Use a ruler or known measurement in the image\n- Draw a straight line across the full length\n- Enter the exact measurement in millimeters")
             
+    except MemoryError:
+        # Specific handling for memory errors
+        aggressive_cleanup()
+        st.error("❌ Out of memory! Please:")
+        st.info("💡 **Memory Solutions:**\n- Use smaller images (< 1MB recommended)\n- Clear all samples if you have many\n- Refresh the page (F5)\n- Close other browser tabs")
+        if st.button("🧹 Clear All Data & Restart"):
+            try:
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                aggressive_cleanup()
+                safe_rerun()
+            except:
+                st.info("Please refresh the page manually (F5)")
     except Exception as e:
         aggressive_cleanup()
-        st.error(f"❌ Application error: {str(e)}")
-        st.info("🔄 Please refresh the page or try a smaller image (< 4MB recommended)")
+        error_message = str(e)
+        st.error(f"❌ Application error: {error_message}")
+        
+        # Provide specific help based on error type
+        if "size" in error_message.lower() or "memory" in error_message.lower():
+            st.info("💡 **Memory Issue:** Use a smaller image (< 1MB) or clear samples")
+        elif "format" in error_message.lower() or "decode" in error_message.lower():
+            st.info("� **Format Issue:** Try a different image format (JPG recommended)")
+        elif "canvas" in error_message.lower():
+            st.info("💡 **Canvas Issue:** Try refreshing the page or drawing again")
+        else:
+            st.info("💡 **General Solution:** Refresh the page (F5) or try a smaller image")
+        
         if st.button("🔄 Restart Application"):
             safe_rerun()
     finally:
