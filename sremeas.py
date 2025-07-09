@@ -6,7 +6,6 @@ import pandas as pd
 from PIL import Image
 import gc
 from io import BytesIO
-import weakref
 import time
 
 # Cloud-optimized page config
@@ -30,257 +29,139 @@ for key, default in [
         st.session_state[key] = default
 
 # Ultra-optimized settings for maximum cloud stability
-MAX_IMAGE_SIZE = 400      # Safer for Streamlit Cloud
-CANVAS_SIZE = 500         # Safer for Streamlit Cloud
-MAX_FILE_SIZE_MB = 5      # Keep, but recommend <3MB
-MEMORY_CLEANUP_INTERVAL = 15  # More frequent cleanup
+MAX_IMAGE_SIZE = 350      # Further reduced for cloud stability
+CANVAS_SIZE = 500         # Kept optimal size
+MAX_FILE_SIZE_MB = 10     # Increased file size limit
+MEMORY_CLEANUP_INTERVAL = 10  # More aggressive cleanup
+MAX_SAMPLES = 30          # Prevent memory buildup
 
-# Memory management utilities
 def aggressive_cleanup():
-    """Ultra-aggressive memory cleanup for maximum cloud stability"""
+    """Aggressive memory cleanup for cloud stability"""
+    gc.collect()
     try:
-        # Force garbage collection multiple times
-        for _ in range(3):
-            gc.collect()
-        
-        # Clear OpenCV cache safely
-        try:
-            cv2.setUseOptimized(True)
-        except Exception:
-            pass
-        
-        # Clear matplotlib cache if available (removed to avoid import warnings)
-        # matplotlib.pyplot cleanup is optional and not critical for functionality
-        
-        # Update cleanup timestamp
-        st.session_state.last_cleanup = time.time()
-        
-        # Clear large objects from session state periodically
-        if hasattr(st.session_state, 'temp_images'):
-            try:
-                del st.session_state.temp_images
-            except:
-                pass
-                
+        cv2.setUseOptimized(True)
+        # Clear specific large objects from session state
+        for key in ['temp_canvas_data', 'temp_masks', 'large_arrays']:
+            if key in st.session_state:
+                del st.session_state[key]
     except Exception:
-        # Silent fail to prevent crashes
         pass
+    st.session_state.last_cleanup = time.time()
+    # More aggressive temp image cleanup
+    if hasattr(st.session_state, 'temp_images'):
+        if len(getattr(st.session_state, 'temp_images', [])) > 1:  # More aggressive
+            del st.session_state.temp_images
 
 def check_memory_limit():
     """Check if we're approaching memory limits using fallback method"""
-    try:
-        # Use basic check based on session state size (psutil removed to avoid import warnings)
-        if len(st.session_state.samples) > 20:
-            st.info("💡 Many samples stored. Consider downloading and clearing for better performance.")
-            return True
-        
-        # Additional basic memory check - if we have many large objects in session state
-        if hasattr(st.session_state, 'temp_images') and len(getattr(st.session_state, 'temp_images', [])) > 5:
-            st.warning("⚠️ Multiple images in memory. Consider clearing for better performance.")
-            return True
-            
-    except Exception:
-        # Fallback errors, continue safely
-        pass
+    # More aggressive memory monitoring
+    if len(st.session_state.samples) > MAX_SAMPLES:
+        st.error(f"💾 Maximum samples reached ({MAX_SAMPLES}). Please download and clear samples.")
+        return True
+    if len(st.session_state.samples) > 15:
+        st.warning("⚠️ Many samples stored. Consider downloading results soon.")
+        return True
+    if hasattr(st.session_state, 'temp_images') and len(getattr(st.session_state, 'temp_images', [])) > 2:
+        st.warning("⚠️ Multiple images in memory. Consider clearing for better performance.")
+        return True
     return False
 
 def should_cleanup():
     """Check if cleanup is needed"""
-    try:
-        return time.time() - st.session_state.last_cleanup > MEMORY_CLEANUP_INTERVAL
-    except Exception:
-        return False
+    return time.time() - st.session_state.last_cleanup > MEMORY_CLEANUP_INTERVAL
 
-@st.cache_data(max_entries=1, ttl=180, show_spinner=False)
+@st.cache_data(max_entries=1, ttl=120, show_spinner=False)  # Reduced TTL for faster cleanup
 def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
-    """Ultra-optimized image processing for maximum cloud stability"""
+    """Optimized image processing for cloud stability"""
+    if not uploaded_file or len(uploaded_file) == 0:
+        return None, None, None
+    file_size_mb = len(uploaded_file) / (1024 * 1024)
+    if file_size_mb > MAX_FILE_SIZE_MB:
+        st.error(f"File too large: {file_size_mb:.1f}MB. Use files under {MAX_FILE_SIZE_MB}MB.")
+        return None, None, None
     try:
-        if not uploaded_file or len(uploaded_file) == 0:
+        image = Image.open(BytesIO(uploaded_file))
+        original_size = image.size
+        if original_size[0] * original_size[1] == 0:
+            st.error("❌ Invalid image dimensions")
             return None, None, None
-            
-        file_size_mb = len(uploaded_file) / (1024 * 1024)
-        if file_size_mb > MAX_FILE_SIZE_MB:
-            st.error(f"File too large: {file_size_mb:.1f}MB. Use files under {MAX_FILE_SIZE_MB}MB.")
-            return None, None, None
-        
-        # Enhanced image loading with better error handling
-        try:
-            image_buffer = BytesIO(uploaded_file)
-            image = Image.open(image_buffer)
-            original_size = image.size
-            
-            # Validate image dimensions
-            if original_size[0] * original_size[1] == 0:
-                st.error("❌ Invalid image dimensions")
-                return None, None, None
-            
-            # Memory safety check for large images
-            if original_size[0] * original_size[1] > 2500000:  # >2.5MP
-                st.warning("Large image detected. Downscaling for cloud stability.")
-                max_dim = min(max_dim, 320)  # Conservative reduction for large images
-            
-            # Convert to RGB immediately to save memory
-            if image.mode != 'RGB':
-                image = image.convert("RGB")
-            
-        except Exception as e:
-            st.error(f"❌ Image loading failed: {str(e)}")
-            return None, None, None
-            
-        # Ultra-aggressive downscaling for cloud stability
+        # More aggressive size limits for cloud
+        if original_size[0] * original_size[1] > 1500000:  # Reduced threshold
+            st.warning("Large image detected. Downscaling for cloud stability.")
+            max_dim = min(max_dim, 280)  # More aggressive downscaling
+        if image.mode != 'RGB':
+            image = image.convert("RGB")
         scale = min(max_dim / image.height, max_dim / image.width, 1.0)
         if scale < 1.0:
             new_size = (int(image.width * scale), int(image.height * scale))
-            # Use NEAREST for minimal memory usage
-            try:
-                image = image.resize(new_size, Image.NEAREST)
-                st.info(f"Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]}")
-            except Exception as e:
-                st.error(f"Resize error: {str(e)}")
-                return None, None, None
-        
-        # Convert to numpy with enhanced error handling
-        try:
-            image_np = np.array(image, dtype=np.uint8)
-            if image_np.size == 0:
-                st.error("❌ Image conversion failed - empty array")
-                return None, None, None
-                
-            del image  # Immediate cleanup
-            if image_buffer:
-                image_buffer.close()
-                del image_buffer
-        except Exception as e:
-            st.error(f"Array conversion error: {str(e)}")
-            return None, None, None
-        
-        # Force cleanup
+            image = image.resize(new_size, Image.LANCZOS)
+            st.info(f"Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]}")
+        image_np = np.array(image, dtype=np.uint8)
+        del image  # Explicit cleanup
         aggressive_cleanup()
-        
         return image_np, original_size, scale
-        
-    except MemoryError:
-        aggressive_cleanup()
-        st.error("Out of memory. Please use a smaller image (<2MB recommended).")
-        return None, None, None
     except Exception as e:
         aggressive_cleanup()
         st.error(f"Processing failed: {str(e)}")
         return None, None, None
 
 def quick_color_analysis(image_np, mask, mm_per_px):
-    """Enhanced color analysis with preserved masking formula and ultra-safe cloud memory handling"""
-    try:
-        if image_np is None or mask is None or mm_per_px is None:
-            return 0, 0, 0, None, None
-        
-        if mask.size == 0 or np.max(mask) == 0:
-            return 0, 0, 0, None, None
-        
-        # Early memory check for large images
-        total_pixels = image_np.shape[0] * image_np.shape[1]
-        if total_pixels > 500000:  # > 0.5MP
-            st.info("🔬 Processing large image - this may take longer on cloud...")
-        
-        # Ensure mask matches image dimensions safely
-        if mask.shape != image_np.shape[:2]:
-            try:
-                mask = cv2.resize(mask, (image_np.shape[1], image_np.shape[0]), interpolation=cv2.INTER_NEAREST)
-            except Exception:
-                return 0, 0, 0, None, None
-        
-        # PRESERVED MASKING FORMULA - Enhanced color detection with memory optimization
-        try:
-            hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
-        except Exception:
-            return 0, 0, 0, None, None
-        
-        # Enhanced healthy mango detection (preserved ranges)
-        mango_mask1 = cv2.inRange(hsv, (20, 40, 60), (85, 255, 255))    # Bright yellow-green
-        mango_mask2 = cv2.inRange(hsv, (15, 25, 40), (80, 200, 200))    # Medium yellow-green
-        mango_mask3 = cv2.inRange(hsv, (25, 20, 100), (75, 150, 255))   # Pale healthy areas
-        healthy_mask = cv2.bitwise_or(mango_mask1, cv2.bitwise_or(mango_mask2, mango_mask3))
-        
-        # Enhanced shadow detection (preserved ranges)
-        shadow_mask1 = cv2.inRange(hsv, (15, 20, 25), (85, 120, 110))   # Colored shadows
-        shadow_mask2 = cv2.inRange(hsv, (10, 10, 15), (90, 60, 90))     # Deep shadows
-        shadow_mask = cv2.bitwise_or(shadow_mask1, shadow_mask2)
-        
-        # Enhanced lesion detection (preserved ranges)
-        lesion_mask1 = cv2.inRange(hsv, (8, 50, 30), (25, 255, 140))    # Brown anthracnose
-        lesion_mask2 = cv2.inRange(hsv, (0, 60, 25), (15, 255, 120))    # Red-brown lesions
-        lesion_mask3 = cv2.inRange(hsv, (0, 0, 0), (180, 255, 45))      # Very dark lesions
-        lesion_mask4 = cv2.inRange(hsv, (0, 10, 20), (180, 80, 100))    # Grayish lesions
-        
-        # Combine lesion masks (preserved logic)
-        raw_lesion_mask = cv2.bitwise_or(lesion_mask1, lesion_mask2)
-        raw_lesion_mask = cv2.bitwise_or(raw_lesion_mask, lesion_mask3)
-        raw_lesion_mask = cv2.bitwise_or(raw_lesion_mask, lesion_mask4)
-        
-        # Apply ROI mask to all (preserved)
-        healthy_mask = cv2.bitwise_and(healthy_mask, mask)
-        raw_lesion_mask = cv2.bitwise_and(raw_lesion_mask, mask)
-        
-        # Simplified lesion processing (no border restrictions - preserved)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        cleaned_lesion_mask = cv2.morphologyEx(raw_lesion_mask, cv2.MORPH_CLOSE, kernel)
-        cleaned_lesion_mask = cv2.morphologyEx(cleaned_lesion_mask, cv2.MORPH_OPEN, kernel)
-        
-        # Size filtering (preserved)
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned_lesion_mask, connectivity=8)
-        final_lesion_mask = np.zeros_like(cleaned_lesion_mask)
-        
-        for i in range(1, num_labels):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if area >= 3:  # Minimum lesion size
-                final_lesion_mask[labels == i] = 255
-        
-        # Create final masks (preserved)
-        total_mango_mask = cv2.bitwise_or(healthy_mask, final_lesion_mask)
-        
-        # Enhanced morphological operations (preserved)
-        base_kernel_size = max(2, int(np.sqrt(np.count_nonzero(mask)) / 50))
-        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (base_kernel_size, base_kernel_size))
-        kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (base_kernel_size + 1, base_kernel_size + 1))
-        
-        # Final morphological operations (preserved)
-        final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_CLOSE, kernel_medium)
-        final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_OPEN, kernel_small)
-        final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_CLOSE, kernel_small)
-        final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_OPEN, kernel_small)
-        
-        # Calculate areas safely
-        mango_area_px = np.count_nonzero(total_mango_mask)
-        lesion_area_px = np.count_nonzero(final_lesion_mask)
-        
-        if mango_area_px == 0:
-            return 0, 0, 0, None, None
-        
-        mm_per_px_sq = mm_per_px * mm_per_px
-        mango_area_mm2 = mango_area_px * mm_per_px_sq
-        lesion_area_mm2 = lesion_area_px * mm_per_px_sq
-        lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 > 0 else 0
-        
-        # Safe cleanup
-        try:
-            del hsv, mango_mask1, mango_mask2, mango_mask3, healthy_mask, shadow_mask1, shadow_mask2, shadow_mask
-            del lesion_mask1, lesion_mask2, lesion_mask3, lesion_mask4, raw_lesion_mask, cleaned_lesion_mask
-            del kernel, kernel_small, kernel_medium
-        except Exception:
-            pass
-        
-        return mango_area_mm2, lesion_area_mm2, lesion_percent, total_mango_mask, final_lesion_mask
-        
-    except Exception as e:
-        aggressive_cleanup()
-        st.error(f"❌ Analysis failed: {str(e)}")
+    """Color analysis with preserved masking formula and safe memory handling"""
+    if image_np is None or mask is None or mm_per_px is None:
         return 0, 0, 0, None, None
+    if mask.size == 0 or np.max(mask) == 0:
+        return 0, 0, 0, None, None
+    if mask.shape != image_np.shape[:2]:
+        mask = cv2.resize(mask, (image_np.shape[1], image_np.shape[0]), interpolation=cv2.INTER_NEAREST)
+    hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+    mango_mask1 = cv2.inRange(hsv, (20, 40, 60), (85, 255, 255))
+    mango_mask2 = cv2.inRange(hsv, (15, 25, 40), (80, 200, 200))
+    mango_mask3 = cv2.inRange(hsv, (25, 20, 100), (75, 150, 255))
+    healthy_mask = cv2.bitwise_or(mango_mask1, cv2.bitwise_or(mango_mask2, mango_mask3))
+    shadow_mask1 = cv2.inRange(hsv, (15, 20, 25), (85, 120, 110))
+    shadow_mask2 = cv2.inRange(hsv, (10, 10, 15), (90, 60, 90))
+    shadow_mask = cv2.bitwise_or(shadow_mask1, shadow_mask2)
+    lesion_mask1 = cv2.inRange(hsv, (8, 50, 30), (25, 255, 140))
+    lesion_mask2 = cv2.inRange(hsv, (0, 60, 25), (15, 255, 120))
+    lesion_mask3 = cv2.inRange(hsv, (0, 0, 0), (180, 255, 45))
+    lesion_mask4 = cv2.inRange(hsv, (0, 10, 20), (180, 80, 100))
+    raw_lesion_mask = cv2.bitwise_or(lesion_mask1, lesion_mask2)
+    raw_lesion_mask = cv2.bitwise_or(raw_lesion_mask, lesion_mask3)
+    raw_lesion_mask = cv2.bitwise_or(raw_lesion_mask, lesion_mask4)
+    healthy_mask = cv2.bitwise_and(healthy_mask, mask)
+    raw_lesion_mask = cv2.bitwise_and(raw_lesion_mask, mask)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    cleaned_lesion_mask = cv2.morphologyEx(raw_lesion_mask, cv2.MORPH_CLOSE, kernel)
+    cleaned_lesion_mask = cv2.morphologyEx(cleaned_lesion_mask, cv2.MORPH_OPEN, kernel)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned_lesion_mask, connectivity=8)
+    final_lesion_mask = np.zeros_like(cleaned_lesion_mask)
+    for i in range(1, num_labels):
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area >= 3:
+            final_lesion_mask[labels == i] = 255
+    total_mango_mask = cv2.bitwise_or(healthy_mask, final_lesion_mask)
+    base_kernel_size = max(2, int(np.sqrt(np.count_nonzero(mask)) / 50))
+    kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (base_kernel_size, base_kernel_size))
+    kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (base_kernel_size + 1, base_kernel_size + 1))
+    final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_CLOSE, kernel_medium)
+    final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_OPEN, kernel_small)
+    final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_CLOSE, kernel_small)
+    final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_OPEN, kernel_small)
+    mango_area_px = np.count_nonzero(total_mango_mask)
+    lesion_area_px = np.count_nonzero(final_lesion_mask)
+    if mango_area_px == 0:
+        return 0, 0, 0, None, None
+    mm_per_px_sq = mm_per_px * mm_per_px
+    mango_area_mm2 = mango_area_px * mm_per_px_sq
+    lesion_area_mm2 = lesion_area_px * mm_per_px_sq
+    lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 > 0 else 0
+    return mango_area_mm2, lesion_area_mm2, lesion_percent, total_mango_mask, final_lesion_mask
 
-# File uploader with cloud optimization
+# File uploader with enhanced cloud optimization messaging
 uploaded_file = st.file_uploader(
     "Upload mango image (JPG/PNG)", 
     type=["png", "jpg", "jpeg"],
-    help=f"Max size: {MAX_FILE_SIZE_MB}MB. Smaller files process faster on cloud."
+    help=f"Max size: {MAX_FILE_SIZE_MB}MB. For best cloud performance: Use JPG format, <3MB files recommended"
 )
 
 def safe_rerun():
@@ -311,8 +192,8 @@ def safe_add_sample(result):
             st.session_state.samples = []
         
         # Prevent excessive samples that could cause memory issues on cloud
-        if len(st.session_state.samples) >= 50:  # Cloud-safe limit
-            st.warning("⚠️ Maximum samples reached (50). Clear some samples before adding more.")
+        if len(st.session_state.samples) >= MAX_SAMPLES:
+            st.warning(f"⚠️ Maximum samples reached ({MAX_SAMPLES}). Clear some samples before adding more.")
             return False
         
         # Enhanced validation
@@ -369,9 +250,9 @@ if uploaded_file:
             st.info("💡 **Tips to reduce file size:**\n- Use JPG instead of PNG\n- Reduce image resolution\n- Compress image before upload")
             st.stop()
         
-        if file_size > 3:
+        if file_size > 5:
             st.warning(f"⚠️ Large file: {file_size:.1f}MB - processing may be slower on cloud")
-        elif file_size > 2:
+        elif file_size > 3:
             st.info(f"📏 File size: {file_size:.1f}MB - good for cloud processing")
         else:
             st.success(f"✅ File size: {file_size:.1f}MB - optimal for cloud")
@@ -382,13 +263,13 @@ if uploaded_file:
                 image_np, original_size, scale = process_uploaded_image(uploaded_file.getvalue())
             except Exception as e:
                 st.error(f"❌ Processing error: {str(e)}")
-                st.info("🔄 Please try again with a smaller image (< 2MB recommended)")
+                st.info("🔄 Please try again with a smaller image (< 5MB recommended)")
                 aggressive_cleanup()
                 st.stop()
         
         if image_np is None:
             st.error("❌ Failed to process image. Try a smaller file or different format.")
-            st.info("💡 **Supported formats:** JPG (recommended), PNG\n**Recommended size:** < 2MB for best cloud performance")
+            st.info("💡 **Supported formats:** JPG (recommended), PNG\n**Recommended size:** < 5MB for best cloud performance")
             st.stop()
         
         h, w = image_np.shape[:2]
@@ -408,9 +289,9 @@ if uploaded_file:
                 display_scale = min_scale
         
         # Memory check before creating display image
-        if display_w * display_h * 3 > 2000000:  # > 2MB RGB image
+        if display_w * display_h * 3 > 1500000:  # Reduced threshold for cloud stability
             st.warning("⚠️ Large display size. Using reduced canvas for cloud stability.")
-            display_scale = min(display_scale, 0.8)
+            display_scale = min(display_scale, 0.7)  # More aggressive scaling
             display_w = int(w * display_scale)
             display_h = int(h * display_scale)
         
@@ -498,8 +379,8 @@ if uploaded_file:
                     # Process in chunks to avoid memory issues on cloud
                     display_image_array = np.array(display_image, dtype=np.float32)
                     
-                    # Check array size before processing
-                    if display_image_array.size > 1500000:  # Large array
+                    # Check array size before processing - more aggressive threshold
+                    if display_image_array.size > 1000000:  # Reduced threshold
                         st.info("🔧 Applying brightness adjustment (large image)...")
                     
                     display_image_array = np.clip(display_image_array * brightness, 0, 255).astype(np.uint8)
@@ -673,16 +554,14 @@ if uploaded_file:
                                 display_lesion_mask = lesion_mask
                             
                             # Memory check for overlay processing
-                            if overlay_image.size > 2000000:  # Large overlay
+                            if overlay_image.size > 1000000:  # Reduced threshold
                                 st.info("🔧 Creating overlay (large image)...")
                             
                             # Add colored overlays safely
-                            # Green tint for healthy areas
                             healthy_overlay = display_total_mask > 0
                             lesion_overlay = display_lesion_mask > 0
                             
                             overlay_image[healthy_overlay & ~lesion_overlay] = overlay_image[healthy_overlay & ~lesion_overlay] * 0.7 + np.array([0, 100, 0]) * 0.3
-                            # Red tint for lesion areas
                             overlay_image[lesion_overlay] = overlay_image[lesion_overlay] * 0.7 + np.array([100, 0, 0]) * 0.3
                             
                             overlay_image = np.clip(overlay_image, 0, 255).astype(np.uint8)
@@ -697,7 +576,44 @@ if uploaded_file:
                             st.error(f"❌ Overlay creation failed: {str(e)}")
                             overlay_pil = adjusted_display_image  # Fallback to original image
                         
-                        # Enhanced correction canvas with better usability
+                        # Optionally, skip overlay creation for very large images or when not needed
+                        overlay_skip_threshold = 800000  # Further reduced threshold for faster switching
+                        create_overlay = (overlay_image.size <= overlay_skip_threshold) and (canvas_mode != "transform")
+                        if not create_overlay:
+                            overlay_pil = adjusted_display_image
+                        else:
+                            try:
+                                overlay_image = np.array(adjusted_display_image)
+                                if display_scale != 1.0:
+                                    display_total_mask = cv2.resize(total_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
+                                    display_lesion_mask = cv2.resize(lesion_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
+                                else:
+                                    display_total_mask = total_mask
+                                    display_lesion_mask = lesion_mask
+
+                                # Add colored overlays safely
+                                healthy_overlay = display_total_mask > 0
+                                lesion_overlay = display_lesion_mask > 0
+
+                                overlay_image[healthy_overlay & ~lesion_overlay] = overlay_image[healthy_overlay & ~lesion_overlay] * 0.7 + np.array([0, 100, 0]) * 0.3
+                                overlay_image[lesion_overlay] = overlay_image[lesion_overlay] * 0.7 + np.array([100, 0, 0]) * 0.3
+
+                                overlay_image = np.clip(overlay_image, 0, 255).astype(np.uint8)
+                                overlay_pil = Image.fromarray(overlay_image)
+
+                                # Cleanup intermediate arrays
+                                del healthy_overlay, lesion_overlay, overlay_image
+                                if display_scale != 1.0:
+                                    del display_total_mask, display_lesion_mask
+                                gc.collect()
+                            except Exception as e:
+                                st.error(f"❌ Overlay creation failed: {str(e)}")
+                                overlay_pil = adjusted_display_image  # Fallback to original image
+
+                        # Use a unique key for each correction mode to avoid slow redraws
+                        correction_canvas_key = f"correction_canvas_{correction_mode}_{pen_size}"
+
+                        # Enhanced correction canvas with better usability and faster switching
                         correction_canvas = st_canvas(
                             fill_color="rgba(0,0,0,0)",
                             stroke_width=pen_size,
@@ -707,9 +623,9 @@ if uploaded_file:
                             height=display_h,
                             width=display_w,
                             drawing_mode=canvas_mode,
-                            key="correction_canvas",
+                            key=correction_canvas_key,
                         )
-                        
+
                         st.caption("🟢 Green tint = Healthy areas | 🔴 Red tint = Detected lesions | Use pens to correct misclassifications")
                         
                         # Apply corrections with enhanced error handling
@@ -723,7 +639,7 @@ if uploaded_file:
                                         correction_data = correction_canvas.image_data
                                         
                                         # Memory check before processing
-                                        if correction_data.size > 1500000:  # Large correction data
+                                        if correction_data.size > 1000000:  # Reduced threshold
                                             st.info("🔧 Processing corrections (large canvas)...")
                                         
                                         # Extract yellow and black pen strokes safely
@@ -925,14 +841,26 @@ if uploaded_file:
             st.markdown("**💡 Tips for scale setting:**\n- Use a ruler or known measurement in the image\n- Draw a straight line across the full length\n- Enter the exact measurement in millimeters")
             
     except MemoryError:
-        # Specific handling for memory errors
+        # Specific handling for memory errors with enhanced cleanup
         aggressive_cleanup()
+        # Emergency cleanup of all temporary session state
+        temp_keys = [k for k in st.session_state.keys() if 'temp' in k.lower() or 'canvas' in k.lower()]
+        for key in temp_keys:
+            try:
+                del st.session_state[key]
+            except:
+                pass
+        gc.collect()
         st.error("❌ Out of memory! Please:")
         st.info("💡 **Memory Solutions:**\n- Use smaller images (< 1MB recommended)\n- Clear all samples if you have many\n- Refresh the page (F5)\n- Close other browser tabs")
-        if st.button("🧹 Clear All Data & Restart"):
+        if st.button("🧹 Emergency Cleanup & Restart"):
             try:
                 for key in list(st.session_state.keys()):
-                    del st.session_state[key]
+                    if key not in ['samples']:  # Only preserve samples
+                        try:
+                            del st.session_state[key]
+                        except:
+                            pass
                 aggressive_cleanup()
                 safe_rerun()
             except:
@@ -946,7 +874,7 @@ if uploaded_file:
         if "size" in error_message.lower() or "memory" in error_message.lower():
             st.info("💡 **Memory Issue:** Use a smaller image (< 1MB) or clear samples")
         elif "format" in error_message.lower() or "decode" in error_message.lower():
-            st.info("� **Format Issue:** Try a different image format (JPG recommended)")
+            st.info("📸 **Format Issue:** Try a different image format (JPG recommended)")
         elif "canvas" in error_message.lower():
             st.info("💡 **Canvas Issue:** Try refreshing the page or drawing again")
         else:
