@@ -30,7 +30,7 @@ for key, default in [
 
 # Ultra-optimized settings for maximum cloud stability
 MAX_IMAGE_SIZE = 350      # Further reduced for cloud stability
-CANVAS_SIZE = 500         # Kept optimal size
+CANVAS_SIZE = 650         # Increased for better usability
 MAX_FILE_SIZE_MB = 10     # Increased file size limit
 MEMORY_CLEANUP_INTERVAL = 10  # More aggressive cleanup
 MAX_SAMPLES = 30          # Prevent memory buildup
@@ -281,9 +281,9 @@ if uploaded_file:
         display_h = int(h * display_scale)
         
         # Ensure minimum usable size while maintaining aspect ratio
-        if display_w < 400 or display_h < 300:  # Increased minimum for better usability
-            min_scale = max(400 / w, 300 / h)
-            if min_scale <= 2.0:  # Allow reasonable upscaling for small images
+        if display_w < 450 or display_h < 350:  # Increased minimum for better usability
+            min_scale = max(450 / w, 350 / h)
+            if min_scale <= 2.5:  # Allow more upscaling for small images
                 display_w = int(w * min_scale)
                 display_h = int(h * min_scale)
                 display_scale = min_scale
