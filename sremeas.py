@@ -280,6 +280,11 @@ if uploaded_file:
         display_w = int(w * display_scale)
         display_h = int(h * display_scale)
         
+        # Validate calculated dimensions
+        if display_w <= 0 or display_h <= 0:
+            st.error(f"❌ Invalid display dimensions calculated: {display_w}x{display_h}")
+            st.stop()
+        
         # Ensure minimum usable size while maintaining aspect ratio
         if display_w < 450 or display_h < 350:  # Increased minimum for better usability
             min_scale = max(450 / w, 350 / h)
@@ -288,12 +293,31 @@ if uploaded_file:
                 display_h = int(h * min_scale)
                 display_scale = min_scale
         
+        # Additional validation after min size adjustment
+        if display_w <= 0 or display_h <= 0:
+            st.error(f"❌ Invalid display dimensions after adjustment: {display_w}x{display_h}")
+            st.stop()
+            
+        # Reasonable maximum limits to prevent browser crashes
+        MAX_DISPLAY_DIM = 2000
+        if display_w > MAX_DISPLAY_DIM or display_h > MAX_DISPLAY_DIM:
+            st.warning(f"⚠️ Display size too large ({display_w}x{display_h}). Reducing for stability.")
+            scale_factor = min(MAX_DISPLAY_DIM / display_w, MAX_DISPLAY_DIM / display_h)
+            display_w = int(display_w * scale_factor)
+            display_h = int(display_h * scale_factor)
+            display_scale *= scale_factor
+        
         # Memory check before creating display image
         if display_w * display_h * 3 > 1500000:  # Reduced threshold for cloud stability
             st.warning("⚠️ Large display size. Using reduced canvas for cloud stability.")
             display_scale = min(display_scale, 0.7)  # More aggressive scaling
             display_w = int(w * display_scale)
             display_h = int(h * display_scale)
+            
+            # Final validation
+            if display_w <= 0 or display_h <= 0:
+                st.error("❌ Display scaling resulted in invalid dimensions")
+                st.stop()
         
         # Create display image maintaining aspect ratio with error handling
         try:
@@ -309,18 +333,24 @@ if uploaded_file:
         st.markdown("## 1️⃣ Set Scale")
         st.info("📏 Draw a line on a known measurement (ruler/scale bar)")
         
-        # Enhanced scale canvas with better usability
-        scale_canvas = st_canvas(
-            fill_color="rgba(0,0,0,0)",
-            stroke_width=3,  # Increased for better visibility on larger canvas
-            stroke_color="rgba(255,0,0,1)",  # Red color for better visibility
-            background_image=display_image,
-            update_streamlit=True,
-            height=display_h,
-            width=display_w,
-            drawing_mode="line",
-            key="scale_canvas",
-        )
+        # Enhanced scale canvas with better usability and error handling
+        try:
+            scale_canvas = st_canvas(
+                fill_color="rgba(0,0,0,0)",
+                stroke_width=3,  # Increased for better visibility on larger canvas
+                stroke_color="rgba(255,0,0,1)",  # Red color for better visibility
+                background_image=display_image,
+                update_streamlit=True,
+                height=display_h,
+                width=display_w,
+                drawing_mode="line",
+                key="scale_canvas",
+            )
+        except Exception as e:
+            st.error(f"❌ Scale canvas creation failed: {str(e)}")
+            st.error("Please try refreshing the page or using a smaller image.")
+            aggressive_cleanup()
+            st.stop()
         
         scale_length_mm = st.number_input(
             "Real length of drawn line (mm):",
@@ -329,20 +359,41 @@ if uploaded_file:
             step=1.0
         )
         
-        # Safe scale calculation with error handling
+        # Safe scale calculation with enhanced error handling
         scale_px = None
-        if scale_canvas.json_data and scale_canvas.json_data.get("objects"):
+        if scale_canvas and hasattr(scale_canvas, 'json_data') and scale_canvas.json_data:
             try:
-                obj = scale_canvas.json_data["objects"][-1]
-                if obj.get("type") == "line":
-                    dx = obj["x2"] - obj["x1"]
-                    dy = obj["y2"] - obj["y1"]
-                    scale_px = np.sqrt(dx*dx + dy*dy)
-                    if display_scale != 1.0:
-                        scale_px /= display_scale
-                    st.success(f"📏 Line drawn: {scale_px:.1f} pixels")
+                objects = scale_canvas.json_data.get("objects", [])
+                if objects and isinstance(objects, list):
+                    # Get the last drawn object
+                    obj = objects[-1]
+                    if obj and isinstance(obj, dict) and obj.get("type") == "line":
+                        # Safe coordinate extraction
+                        try:
+                            x1 = float(obj.get("x1", 0))
+                            y1 = float(obj.get("y1", 0))
+                            x2 = float(obj.get("x2", 0))
+                            y2 = float(obj.get("y2", 0))
+                            
+                            dx = x2 - x1
+                            dy = y2 - y1
+                            scale_px = np.sqrt(dx*dx + dy*dy)
+                            
+                            if scale_px <= 0:
+                                st.warning("⚠️ Please draw a line with some length")
+                                scale_px = None
+                            else:
+                                if display_scale != 1.0 and display_scale > 0:
+                                    scale_px /= display_scale
+                                st.success(f"📏 Line drawn: {scale_px:.1f} pixels")
+                        except (KeyError, ValueError, TypeError) as coord_e:
+                            st.warning(f"⚠️ Error reading line coordinates: {str(coord_e)}")
+                            scale_px = None
+                    else:
+                        st.info("📏 Please draw a line on the scale")
             except Exception as e:
-                st.warning("⚠️ Please draw a clear line on the scale")
+                st.warning(f"⚠️ Scale calculation error: {str(e)}")
+                scale_px = None
         
         if scale_px and scale_length_mm > 0:
             st.session_state.mm_per_px = scale_length_mm / scale_px
@@ -407,41 +458,109 @@ if uploaded_file:
             else:
                 st.info(f"✏️ **{drawing_mode.title()} Mode**: Draw a new {drawing_mode} around the mango.")
             
-            # Enhanced canvas with better usability
-            canvas_result = st_canvas(
-                fill_color="rgba(255,165,0,0.2)",  # Slightly more visible fill
-                stroke_width=3,  # Increased stroke width for better visibility
-                stroke_color="rgba(255,165,0,1)",
-                background_image=adjusted_display_image,
-                update_streamlit=True,
-                height=display_h,
-                width=display_w,
-                drawing_mode=drawing_mode,
-                key="mango_canvas",
-            )
+            # Add canvas interaction safety tips
+            if drawing_mode == "polygon":
+                st.warning("⚠️ **Polygon Tips:** Draw slowly, avoid crossing lines, double-click to finish")
+            elif drawing_mode == "circle":
+                st.info("⭕ **Circle Tips:** Click and drag to create a circle around the mango")
+            elif drawing_mode == "rect":
+                st.info("⬜ **Rectangle Tips:** Click and drag to create a rectangle around the mango")
+            elif drawing_mode == "transform":
+                st.info("🔄 **Transform Tips:** Click existing shapes to select and modify them")
+            
+            # Canvas stability check
+            canvas_attempts = st.session_state.get('canvas_attempts', 0)
+            if canvas_attempts > 3:
+                st.warning("⚠️ Multiple canvas errors detected. Consider using the Reset App button in the sidebar.")
+            
+            # Enhanced canvas with better usability and error handling
+            try:
+                # Reset error counter on successful canvas creation
+                if 'canvas_attempts' in st.session_state:
+                    st.session_state.canvas_attempts = 0
+                    
+                canvas_result = st_canvas(
+                    fill_color="rgba(255,165,0,0.2)",  # Slightly more visible fill
+                    stroke_width=3,  # Increased stroke width for better visibility
+                    stroke_color="rgba(255,165,0,1)",
+                    background_image=adjusted_display_image,
+                    update_streamlit=True,
+                    height=display_h,
+                    width=display_w,
+                    drawing_mode=drawing_mode,
+                    key="mango_canvas",
+                )
+            except Exception as e:
+                # Track canvas creation errors
+                st.session_state.canvas_attempts = st.session_state.get('canvas_attempts', 0) + 1
+                
+                st.error(f"❌ Canvas creation failed: {str(e)}")
+                st.error("**Possible solutions:**")
+                st.info("""
+                1. Click 'Reset App' in the sidebar
+                2. Try a smaller image (< 3MB)
+                3. Refresh your browser
+                4. Try a different drawing mode
+                """)
+                
+                # Offer immediate recovery
+                if st.button("🔄 Try Again", key="canvas_retry"):
+                    emergency_reset()
+                    st.rerun()
+                
+                aggressive_cleanup()
+                st.stop()
 
             # Safe analysis processing with enhanced error handling
             process_analysis = False
             
-            if canvas_result.image_data is not None and np.any(canvas_result.image_data[:,:,3] > 0):
-                if drawing_mode == "polygon":
-                    try:
-                        if canvas_result.json_data and canvas_result.json_data.get("objects"):
-                            polygon_objects = [obj for obj in canvas_result.json_data["objects"] if obj.get("type") == "polygon"]
-                            path_objects = [obj for obj in canvas_result.json_data["objects"] if obj.get("type") == "path"]
-                            
-                            if polygon_objects:
-                                if not st.session_state.polygon_drawing:
-                                    st.success("✅ Polygon completed! Computing analysis...")
-                                    st.session_state.polygon_drawing = True
+            # Comprehensive safety checks for canvas data
+            try:
+                if (canvas_result is not None and 
+                    hasattr(canvas_result, 'image_data') and 
+                    canvas_result.image_data is not None):
+                    
+                    # Additional safety check for image data shape
+                    if (len(canvas_result.image_data.shape) >= 3 and 
+                        canvas_result.image_data.shape[2] >= 4 and
+                        canvas_result.image_data.size > 0):
+                        
+                        # Safe alpha channel check
+                        try:
+                            alpha_channel = canvas_result.image_data[:,:,3]
+                            has_drawing = np.any(alpha_channel > 0)
+                        except (IndexError, ValueError) as e:
+                            st.warning(f"⚠️ Canvas data format error: {str(e)}")
+                            has_drawing = False
+                        
+                        if has_drawing:
+                            if drawing_mode == "polygon":
+                                try:
+                                    if (canvas_result.json_data and 
+                                        isinstance(canvas_result.json_data, dict) and
+                                        canvas_result.json_data.get("objects")):
+                                        
+                                        objects = canvas_result.json_data["objects"]
+                                        if isinstance(objects, list):
+                                            polygon_objects = [obj for obj in objects if obj and obj.get("type") == "polygon"]
+                                            path_objects = [obj for obj in objects if obj and obj.get("type") == "path"]
+                                            
+                                            if polygon_objects:
+                                                if not st.session_state.get("polygon_drawing", False):
+                                                    st.success("✅ Polygon completed! Computing analysis...")
+                                                    st.session_state.polygon_drawing = True
+                                                process_analysis = True
+                                            elif path_objects:
+                                                st.info("🔄 Drawing polygon... Double-click to close")
+                                                st.session_state.polygon_drawing = False
+                                except Exception as e:
+                                    st.warning(f"⚠️ Polygon processing error: {str(e)}")
+                                    st.session_state.polygon_drawing = False
+                            else:
                                 process_analysis = True
-                            elif path_objects:
-                                st.info("🔄 Drawing polygon... Double-click to close")
-                                st.session_state.polygon_drawing = False
-                    except Exception:
-                        st.warning("⚠️ Polygon drawing error. Please try again.")
-                else:
-                    process_analysis = True
+            except Exception as e:
+                st.error(f"❌ Canvas processing error: {str(e)}")
+                process_analysis = False
             
             if process_analysis:
                 try:
@@ -450,25 +569,102 @@ if uploaded_file:
                         st.error("❌ Memory limit reached. Please try a smaller image or clear samples.")
                         st.stop()
                     
-                    # Create mask safely
+                    # Create mask safely with comprehensive error handling
                     try:
-                        mask = (canvas_result.image_data[:,:,3] > 0).astype(np.uint8) * 255
-                        if mask.size == 0 or np.max(mask) == 0:
+                        # Validate canvas result structure
+                        if (canvas_result is None or 
+                            not hasattr(canvas_result, 'image_data') or 
+                            canvas_result.image_data is None):
+                            st.error("❌ Invalid canvas data")
+                            st.stop()
+                        
+                        # Validate image data dimensions
+                        image_data = canvas_result.image_data
+                        if len(image_data.shape) < 3:
+                            st.error("❌ Invalid canvas image format - missing channels")
+                            st.stop()
+                        
+                        if image_data.shape[2] < 4:
+                            st.error("❌ Invalid canvas image format - missing alpha channel")
+                            st.stop()
+                        
+                        # Safe mask creation with bounds checking
+                        try:
+                            alpha_channel = image_data[:,:,3]
+                            mask = (alpha_channel > 0).astype(np.uint8) * 255
+                        except IndexError as e:
+                            st.error(f"❌ Alpha channel access error: {str(e)}")
+                            st.stop()
+                        
+                        # Validate mask
+                        if mask.size == 0:
+                            st.error("❌ Empty mask generated")
+                            st.stop()
+                        
+                        if np.max(mask) == 0:
                             st.warning("⚠️ No selection detected. Please draw on the image.")
                             st.stop()
+                        
+                        # Validate mask dimensions match expected canvas size
+                        expected_h, expected_w = display_h, display_w
+                        if mask.shape[0] != expected_h or mask.shape[1] != expected_w:
+                            st.warning(f"⚠️ Mask dimension mismatch. Expected: {expected_w}x{expected_h}, Got: {mask.shape[1]}x{mask.shape[0]}")
+                            # Try to resize mask to expected dimensions
+                            try:
+                                mask = cv2.resize(mask, (expected_w, expected_h), interpolation=cv2.INTER_NEAREST)
+                            except Exception as resize_e:
+                                st.error(f"❌ Failed to fix mask dimensions: {str(resize_e)}")
+                                st.stop()
+                        
                     except Exception as e:
                         st.error(f"❌ Mask creation failed: {str(e)}")
+                        st.error("Please try drawing your shape again, or refresh the page if the problem persists.")
                         st.stop()
                     
                     # Scale mask to match processing image safely
                     try:
+                        # Validate original image dimensions
+                        if not isinstance(w, int) or not isinstance(h, int) or w <= 0 or h <= 0:
+                            st.error(f"❌ Invalid image dimensions: {w}x{h}")
+                            st.stop()
+                        
                         if display_scale != 1.0:
-                            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-                            if mask.size == 0:
-                                st.error("❌ Mask scaling failed - empty result")
+                            # Validate scaling parameters
+                            if display_scale <= 0:
+                                st.error(f"❌ Invalid display scale: {display_scale}")
                                 st.stop()
+                            
+                            # Safe mask resizing with validation
+                            try:
+                                original_mask_shape = mask.shape
+                                mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+                                
+                                # Validate resize result
+                                if mask.size == 0:
+                                    st.error("❌ Mask scaling failed - empty result")
+                                    st.stop()
+                                
+                                if mask.shape[0] != h or mask.shape[1] != w:
+                                    st.error(f"❌ Mask scaling failed - wrong dimensions. Expected: {w}x{h}, Got: {mask.shape[1]}x{mask.shape[0]}")
+                                    st.stop()
+                                
+                                st.info(f"🔧 Mask scaled: {original_mask_shape} → {mask.shape}")
+                                
+                            except cv2.error as cv_e:
+                                st.error(f"❌ OpenCV resize error: {str(cv_e)}")
+                                st.stop()
+                            except Exception as resize_e:
+                                st.error(f"❌ Mask resize error: {str(resize_e)}")
+                                st.stop()
+                        
+                        # Final mask validation
+                        if mask.shape[0] != h or mask.shape[1] != w:
+                            st.error(f"❌ Final mask dimension check failed. Expected: {w}x{h}, Got: {mask.shape[1]}x{mask.shape[0]}")
+                            st.stop()
+                            
                     except Exception as e:
                         st.error(f"❌ Mask scaling error: {str(e)}")
+                        st.error("Please try with a smaller image or refresh the page.")
                         aggressive_cleanup()
                         st.stop()
                     
@@ -889,18 +1085,47 @@ if uploaded_file:
         except:
             pass
 
-# Enhanced cloud resource monitoring
-if st.sidebar.button("💾 Memory Status"):
+# Emergency reset function for crash recovery
+def emergency_reset():
+    """Emergency reset function to recover from crashes"""
     try:
-        import sys
-        st.sidebar.info(f"🐍 Python: {sys.version}")
-        st.sidebar.info(f"📊 Samples: {len(st.session_state.samples)}")
-        st.sidebar.info(f"🕒 Last cleanup: {int(time.time() - st.session_state.last_cleanup)}s ago")
-        if st.sidebar.button("🧹 Force Cleanup"):
-            aggressive_cleanup()
-            st.sidebar.success("✅ Cleanup completed")
-    except Exception:
-        st.sidebar.warning("⚠️ Memory info unavailable")
+        # Clear problematic session state keys
+        problem_keys = ['polygon_drawing', 'temp_canvas_data', 'temp_masks', 'large_arrays', 'temp_images']
+        for key in problem_keys:
+            if key in st.session_state:
+                del st.session_state[key]
+        
+        # Clear all canvas-related session state
+        canvas_keys = [k for k in st.session_state.keys() if 'canvas' in k.lower()]
+        for key in canvas_keys:
+            try:
+                del st.session_state[key]
+            except:
+                pass
+        
+        aggressive_cleanup()
+        st.success("✅ Emergency reset completed. You can now upload a new image.")
+        return True
+    except Exception as e:
+        st.error(f"❌ Reset failed: {str(e)}")
+        return False
 
-st.markdown("---")
-st.markdown("🔬 **Plant Pathology Lab, UPLB** | Contact: jsmendoza5@up.edu.ph")
+# Add emergency controls in sidebar
+with st.sidebar:
+    st.markdown("### 🚨 Emergency Controls")
+    if st.button("🔄 Reset App", help="Use if the app crashes or becomes unresponsive"):
+        if emergency_reset():
+            st.rerun()
+    
+    if st.button("🧹 Clear Memory", help="Clear memory and temporary data"):
+        aggressive_cleanup()
+        st.success("✅ Memory cleared")
+    
+    st.markdown("### 💡 Troubleshooting Tips")
+    st.info("""
+    **If the app crashes:**
+    1. Click 'Reset App' above
+    2. Use smaller images (< 3MB)
+    3. Avoid very complex polygon shapes
+    4. Refresh the browser if needed
+    """)
