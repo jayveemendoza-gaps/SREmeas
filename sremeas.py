@@ -30,10 +30,10 @@ for key, default in [
         st.session_state[key] = default
 
 # Ultra-optimized settings for maximum cloud stability
-MAX_IMAGE_SIZE = 450      # Increased for better usability while maintaining cloud stability
-CANVAS_SIZE = 600         # Increased canvas size for better usability
-MAX_FILE_SIZE_MB = 5      # Increased file size limit for better usability
-MEMORY_CLEANUP_INTERVAL = 20  # More frequent cleanup for cloud stability
+MAX_IMAGE_SIZE = 400      # Safer for Streamlit Cloud
+CANVAS_SIZE = 500         # Safer for Streamlit Cloud
+MAX_FILE_SIZE_MB = 5      # Keep, but recommend <3MB
+MEMORY_CLEANUP_INTERVAL = 15  # More frequent cleanup
 
 # Memory management utilities
 def aggressive_cleanup():
@@ -91,7 +91,7 @@ def should_cleanup():
     except Exception:
         return False
 
-@st.cache_data(max_entries=1, ttl=300, show_spinner=False)  # Minimal cache for cloud stability
+@st.cache_data(max_entries=1, ttl=180, show_spinner=False)
 def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
     """Ultra-optimized image processing for maximum cloud stability"""
     try:
@@ -103,31 +103,30 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
             st.error(f"File too large: {file_size_mb:.1f}MB. Use files under {MAX_FILE_SIZE_MB}MB.")
             return None, None, None
         
-        # Early memory check
-        if check_memory_limit():
-            st.error("❌ Memory limit reached. Please use a smaller image.")
-            return None, None, None
-        
-        # Process image with minimal memory usage
+        # Enhanced image loading with better error handling
         try:
-            # Use BytesIO more carefully
             image_buffer = BytesIO(uploaded_file)
             image = Image.open(image_buffer)
             original_size = image.size
             
-            # Immediate size check to prevent huge images
-            if original_size[0] * original_size[1] > 3000000:  # > 3MP (increased threshold)
-                st.warning("⚠️ Very large image detected. Moderate downscaling applied.")
-                max_dim = min(max_dim, 350)  # Less aggressive reduction for large images
+            # Validate image dimensions
+            if original_size[0] * original_size[1] == 0:
+                st.error("❌ Invalid image dimensions")
+                return None, None, None
+            
+            # Memory safety check for large images
+            if original_size[0] * original_size[1] > 2500000:  # >2.5MP
+                st.warning("Large image detected. Downscaling for cloud stability.")
+                max_dim = min(max_dim, 320)  # Conservative reduction for large images
             
             # Convert to RGB immediately to save memory
             if image.mode != 'RGB':
                 image = image.convert("RGB")
-                
+            
         except Exception as e:
-            st.error(f"Image format error: {str(e)}")
+            st.error(f"❌ Image loading failed: {str(e)}")
             return None, None, None
-        
+            
         # Ultra-aggressive downscaling for cloud stability
         scale = min(max_dim / image.height, max_dim / image.width, 1.0)
         if scale < 1.0:
@@ -135,7 +134,7 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
             # Use NEAREST for minimal memory usage
             try:
                 image = image.resize(new_size, Image.NEAREST)
-                st.info(f"📏 Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]} pixels")
+                st.info(f"Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]}")
             except Exception as e:
                 st.error(f"Resize error: {str(e)}")
                 return None, None, None
@@ -162,11 +161,11 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
         
     except MemoryError:
         aggressive_cleanup()
-        st.error("❌ Out of memory. Please use a smaller image (< 1MB recommended for cloud).")
+        st.error("Out of memory. Please use a smaller image (<2MB recommended).")
         return None, None, None
     except Exception as e:
         aggressive_cleanup()
-        st.error(f"❌ Processing failed: {str(e)}")
+        st.error(f"Processing failed: {str(e)}")
         return None, None, None
 
 def quick_color_analysis(image_np, mask, mm_per_px):
@@ -306,14 +305,43 @@ def safe_rerun():
                 st.write("🔄 Please refresh the page manually (F5 or Ctrl+R)")
 
 def safe_add_sample(result):
-    """Safely add sample with error handling"""
+    """Safely add sample with enhanced validation and memory limits"""
     try:
-        if result and all(key in result for key in ["Sample", "Area (mm²)", "Lesions (mm²)", "Lesion %"]):
-            st.session_state.samples.append(result)
-            return True
-        else:
+        if 'samples' not in st.session_state:
+            st.session_state.samples = []
+        
+        # Prevent excessive samples that could cause memory issues on cloud
+        if len(st.session_state.samples) >= 50:  # Cloud-safe limit
+            st.warning("⚠️ Maximum samples reached (50). Clear some samples before adding more.")
+            return False
+        
+        # Enhanced validation
+        if not result or not isinstance(result, dict):
             st.error("❌ Invalid result data")
             return False
+        
+        required_keys = ["Sample", "Area (mm²)", "Lesions (mm²)", "Lesion %"]
+        if not all(key in result for key in required_keys):
+            st.error("❌ Missing required result fields")
+            return False
+        
+        # Validate numeric values
+        try:
+            area = float(result["Area (mm²)"])
+            lesions = float(result["Lesions (mm²)"])
+            percent = float(result["Lesion %"])
+            
+            if area < 0 or lesions < 0 or percent < 0:
+                st.error("❌ Invalid negative values")
+                return False
+        except (ValueError, TypeError):
+            st.error("❌ Invalid numeric values")
+            return False
+        
+        st.session_state.samples.append(result)
+        aggressive_cleanup()  # Cleanup after adding sample
+        return True
+        
     except Exception as e:
         st.error(f"❌ Failed to add sample: {str(e)}")
         return False
@@ -634,26 +662,40 @@ if uploaded_file:
                             stroke_color = "rgba(255, 165, 0, 1)"  # Orange for transform
                             canvas_mode = "transform"
                         
-                        # Create an overlay image showing current classification
-                        overlay_image = np.array(adjusted_display_image)
-                        if display_scale != 1.0:
-                            display_total_mask = cv2.resize(total_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
-                            display_lesion_mask = cv2.resize(lesion_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
-                        else:
-                            display_total_mask = total_mask
-                            display_lesion_mask = lesion_mask
-                        
-                        # Add colored overlays
-                        # Green tint for healthy areas
-                        healthy_overlay = display_total_mask > 0
-                        lesion_overlay = display_lesion_mask > 0
-                        
-                        overlay_image[healthy_overlay & ~lesion_overlay] = overlay_image[healthy_overlay & ~lesion_overlay] * 0.7 + np.array([0, 100, 0]) * 0.3
-                        # Red tint for lesion areas
-                        overlay_image[lesion_overlay] = overlay_image[lesion_overlay] * 0.7 + np.array([100, 0, 0]) * 0.3
-                        
-                        overlay_image = np.clip(overlay_image, 0, 255).astype(np.uint8)
-                        overlay_pil = Image.fromarray(overlay_image)
+                        # Create an overlay image showing current classification with memory safety
+                        try:
+                            overlay_image = np.array(adjusted_display_image)
+                            if display_scale != 1.0:
+                                display_total_mask = cv2.resize(total_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
+                                display_lesion_mask = cv2.resize(lesion_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
+                            else:
+                                display_total_mask = total_mask
+                                display_lesion_mask = lesion_mask
+                            
+                            # Memory check for overlay processing
+                            if overlay_image.size > 2000000:  # Large overlay
+                                st.info("🔧 Creating overlay (large image)...")
+                            
+                            # Add colored overlays safely
+                            # Green tint for healthy areas
+                            healthy_overlay = display_total_mask > 0
+                            lesion_overlay = display_lesion_mask > 0
+                            
+                            overlay_image[healthy_overlay & ~lesion_overlay] = overlay_image[healthy_overlay & ~lesion_overlay] * 0.7 + np.array([0, 100, 0]) * 0.3
+                            # Red tint for lesion areas
+                            overlay_image[lesion_overlay] = overlay_image[lesion_overlay] * 0.7 + np.array([100, 0, 0]) * 0.3
+                            
+                            overlay_image = np.clip(overlay_image, 0, 255).astype(np.uint8)
+                            overlay_pil = Image.fromarray(overlay_image)
+                            
+                            # Cleanup intermediate arrays
+                            del healthy_overlay, lesion_overlay
+                            if display_scale != 1.0:
+                                del display_total_mask, display_lesion_mask
+                            gc.collect()
+                        except Exception as e:
+                            st.error(f"❌ Overlay creation failed: {str(e)}")
+                            overlay_pil = adjusted_display_image  # Fallback to original image
                         
                         # Enhanced correction canvas with better usability
                         correction_canvas = st_canvas(
@@ -676,37 +718,54 @@ if uploaded_file:
                             
                             try:
                                 if correction_canvas.image_data is not None:
-                                    # Get correction masks safely
-                                    correction_data = correction_canvas.image_data
-                                    
-                                    # Extract yellow and black pen strokes safely
-                                    yellow_correction = np.zeros((correction_data.shape[0], correction_data.shape[1]), dtype=np.uint8)
-                                    black_correction = np.zeros((correction_data.shape[0], correction_data.shape[1]), dtype=np.uint8)
-                                    
-                                    # Detect yellow strokes (high R and G, low B)
-                                    yellow_pixels = (correction_data[:,:,0] > 200) & (correction_data[:,:,1] > 200) & (correction_data[:,:,2] < 100) & (correction_data[:,:,3] > 0)
-                                    yellow_correction[yellow_pixels] = 255
-                                    
-                                    # Detect black strokes (low R, G, B)
-                                    black_pixels = (correction_data[:,:,0] < 50) & (correction_data[:,:,1] < 50) & (correction_data[:,:,2] < 50) & (correction_data[:,:,3] > 0)
-                                    black_correction[black_pixels] = 255
-                                    
-                                    # Scale corrections to match processing image safely
-                                    if display_scale != 1.0:
-                                        yellow_correction = cv2.resize(yellow_correction, (w, h), interpolation=cv2.INTER_NEAREST)
-                                        black_correction = cv2.resize(black_correction, (w, h), interpolation=cv2.INTER_NEAREST)
-                                    
-                                    # Apply corrections to masks safely
-                                    corrected_lesion_mask = lesion_mask.copy()
-                                    corrected_total_mask = total_mask.copy()
-                                    
-                                    # Yellow pen: remove from lesions, add to healthy
-                                    corrected_lesion_mask[yellow_correction > 0] = 0
-                                    corrected_total_mask[yellow_correction > 0] = 255
-                                    
-                                    # Black pen: add to lesions
-                                    corrected_lesion_mask[black_correction > 0] = 255
-                                    corrected_total_mask[black_correction > 0] = 255
+                                    # Get correction masks safely with memory monitoring
+                                    try:
+                                        correction_data = correction_canvas.image_data
+                                        
+                                        # Memory check before processing
+                                        if correction_data.size > 1500000:  # Large correction data
+                                            st.info("🔧 Processing corrections (large canvas)...")
+                                        
+                                        # Extract yellow and black pen strokes safely
+                                        yellow_correction = np.zeros((correction_data.shape[0], correction_data.shape[1]), dtype=np.uint8)
+                                        black_correction = np.zeros((correction_data.shape[0], correction_data.shape[1]), dtype=np.uint8)
+                                        
+                                        # Detect yellow strokes (high R and G, low B)
+                                        yellow_pixels = (correction_data[:,:,0] > 200) & (correction_data[:,:,1] > 200) & (correction_data[:,:,2] < 100) & (correction_data[:,:,3] > 0)
+                                        yellow_correction[yellow_pixels] = 255
+                                        
+                                        # Detect black strokes (low R, G, B)
+                                        black_pixels = (correction_data[:,:,0] < 50) & (correction_data[:,:,1] < 50) & (correction_data[:,:,2] < 50) & (correction_data[:,:,3] > 0)
+                                        black_correction[black_pixels] = 255
+                                        
+                                        # Cleanup pixel arrays
+                                        del yellow_pixels, black_pixels
+                                        gc.collect()
+                                        
+                                        # Scale corrections to match processing image safely
+                                        if display_scale != 1.0:
+                                            yellow_correction = cv2.resize(yellow_correction, (w, h), interpolation=cv2.INTER_NEAREST)
+                                            black_correction = cv2.resize(black_correction, (w, h), interpolation=cv2.INTER_NEAREST)
+                                        
+                                        # Apply corrections to masks safely
+                                        corrected_lesion_mask = lesion_mask.copy()
+                                        corrected_total_mask = total_mask.copy()
+                                        
+                                        # Yellow pen: remove from lesions, add to healthy
+                                        corrected_lesion_mask[yellow_correction > 0] = 0
+                                        corrected_total_mask[yellow_correction > 0] = 255
+                                        
+                                        # Black pen: add to lesions
+                                        corrected_lesion_mask[black_correction > 0] = 255
+                                        
+                                        # Cleanup correction arrays
+                                        del yellow_correction, black_correction
+                                        gc.collect()
+                                    except Exception as e:
+                                        st.error(f"❌ Correction processing failed: {str(e)}")
+                                        # Fallback to original masks
+                                        corrected_lesion_mask = lesion_mask.copy()
+                                        corrected_total_mask = total_mask.copy()
                                 
                                 # Recalculate areas with corrections
                                 corrected_mango_area_px = np.count_nonzero(corrected_total_mask)
