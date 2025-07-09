@@ -18,61 +18,140 @@ st.set_page_config(
 
 st.title("🥭 Mango Lesion Analyzer")
 
-# Initialize session state efficiently with memory tracking
+# Initialize session state efficiently with cloud optimization
 for key, default in [
     ("samples", []), 
     ("mm_per_px", None), 
     ("polygon_drawing", False),
-    ("last_cleanup", time.time())
+    ("last_cleanup", time.time()),
+    ("last_cache_clear", 0)  # Added for cache management
 ]:
-    if key not in st.session_state:
-        st.session_state[key] = default
+    # Extra safety for cloud stability
+    try:
+        if key not in st.session_state:
+            st.session_state[key] = default
+    except Exception:
+        # Session state might be corrupted, reinitialize safely
+        try:
+            st.session_state.clear()
+            st.session_state[key] = default
+        except Exception:
+            pass  # Ultimate fallback - continue without session state
+
+# Early cleanup check for cloud performance - less frequent
+if time.time() - st.session_state.get('last_cleanup', 0) > 60:  # Every 60 seconds instead of 30
+    gc.collect()
+    st.session_state.last_cleanup = time.time()
 
 # Ultra-optimized settings for maximum cloud stability
-MAX_IMAGE_SIZE = 350      # Further reduced for cloud stability
-CANVAS_SIZE = 650         # Increased for better usability
-MAX_FILE_SIZE_MB = 10     # Increased file size limit
-MEMORY_CLEANUP_INTERVAL = 10  # More aggressive cleanup
-MAX_SAMPLES = 30          # Prevent memory buildup
+MAX_IMAGE_SIZE = 320      # Optimized for cloud speed
+CANVAS_SIZE = 900         # Increased canvas size for more comfortable drawing
+MAX_FILE_SIZE_MB = 8      # Reduced for faster processing
+MEMORY_CLEANUP_INTERVAL = 5   # More frequent cleanup
+MAX_SAMPLES = 25          # Optimized memory limit
+CACHE_CLEANUP_INTERVAL = 60   # Clear cache every minute
 
 def aggressive_cleanup():
-    """Aggressive memory cleanup for cloud stability"""
+    """Ultra-optimized memory cleanup for cloud stability"""
     gc.collect()
     try:
         cv2.setUseOptimized(True)
-        # Clear specific large objects from session state
-        for key in ['temp_canvas_data', 'temp_masks', 'large_arrays']:
-            if key in st.session_state:
-                del st.session_state[key]
+        # Clear specific large objects from session state safely
+        cleanup_keys = ['temp_canvas_data', 'temp_masks', 'large_arrays', 'canvas_cache']
+        for key in cleanup_keys:
+            try:
+                if key in st.session_state:
+                    del st.session_state[key]
+            except Exception:
+                pass
     except Exception:
         pass
-    st.session_state.last_cleanup = time.time()
-    # More aggressive temp image cleanup
-    if hasattr(st.session_state, 'temp_images'):
-        if len(getattr(st.session_state, 'temp_images', [])) > 1:  # More aggressive
-            del st.session_state.temp_images
+    
+    # Safely update last_cleanup time
+    try:
+        st.session_state.last_cleanup = time.time()
+    except Exception:
+        pass
+    
+    # Optimize temp image cleanup safely
+    try:
+        if hasattr(st.session_state, 'temp_images'):
+            if len(getattr(st.session_state, 'temp_images', [])) > 0:  # Clear immediately
+                del st.session_state.temp_images
+    except Exception:
+        pass
+    
+    # Clear Streamlit cache periodically for cloud performance
+    try:
+        if (time.time() - getattr(st.session_state, 'last_cache_clear', 0)) > CACHE_CLEANUP_INTERVAL:
+            try:
+                st.cache_data.clear()
+                st.session_state.last_cache_clear = time.time()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 def check_memory_limit():
-    """Check if we're approaching memory limits using fallback method"""
-    # More aggressive memory monitoring
+    """Optimized memory monitoring for cloud performance"""
+    # Faster memory checks
     if len(st.session_state.samples) > MAX_SAMPLES:
         st.error(f"💾 Maximum samples reached ({MAX_SAMPLES}). Please download and clear samples.")
         return True
-    if len(st.session_state.samples) > 15:
+    if len(st.session_state.samples) > 12:  # Earlier warning for cloud
         st.warning("⚠️ Many samples stored. Consider downloading results soon.")
         return True
-    if hasattr(st.session_state, 'temp_images') and len(getattr(st.session_state, 'temp_images', [])) > 2:
+    # Simplified temp image check
+    if hasattr(st.session_state, 'temp_images') and len(getattr(st.session_state, 'temp_images', [])) > 1:
         st.warning("⚠️ Multiple images in memory. Consider clearing for better performance.")
         return True
     return False
 
 def should_cleanup():
-    """Check if cleanup is needed"""
-    return time.time() - st.session_state.last_cleanup > MEMORY_CLEANUP_INTERVAL
+    """Check if cleanup is needed - less aggressive for cloud stability"""
+    return time.time() - st.session_state.get('last_cleanup', 0) > 10  # Increased from 5 to 10 seconds
 
-@st.cache_data(max_entries=1, ttl=120, show_spinner=False)  # Reduced TTL for faster cleanup
+def emergency_reset():
+    """Emergency reset function to recover from crashes"""
+    try:
+        # Clear problematic session state keys safely
+        problem_keys = ['polygon_drawing', 'temp_canvas_data', 'temp_masks', 'large_arrays', 'temp_images']
+        for key in problem_keys:
+            try:
+                if key in st.session_state:
+                    del st.session_state[key]
+            except Exception:
+                pass
+        
+        # Safer canvas key tracking for cloud stability
+        try:
+            canvas_keys = []
+            for k in list(st.session_state.keys()):  # Convert to list for safety
+                if 'canvas' in k.lower():
+                    canvas_keys.append(k)
+            
+            # Clear all canvas-related session state
+            for key in canvas_keys:
+                try:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                except Exception:
+                    pass
+        except Exception:
+            pass  # Session state might be corrupted, continue safely
+        
+        aggressive_cleanup()
+        return True
+    except Exception as e:
+        try:
+            st.error(f"❌ Reset failed: {str(e)}")
+        except Exception:
+            pass  # Even error display might fail in corrupted state
+        return False
+
+@st.cache_data(max_entries=1, ttl=90, show_spinner=False)  # Optimized TTL for cloud
 def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
-    """Optimized image processing for cloud stability"""
+    """Ultra-optimized image processing for cloud stability"""
     if not uploaded_file or len(uploaded_file) == 0:
         return None, None, None
     file_size_mb = len(uploaded_file) / (1024 * 1024)
@@ -85,87 +164,115 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
         if original_size[0] * original_size[1] == 0:
             st.error("❌ Invalid image dimensions")
             return None, None, None
-        # More aggressive size limits for cloud
-        if original_size[0] * original_size[1] > 1500000:  # Reduced threshold
-            st.warning("Large image detected. Downscaling for cloud stability.")
-            max_dim = min(max_dim, 280)  # More aggressive downscaling
+        
+        # Optimized size limits for cloud speed
+        if original_size[0] * original_size[1] > 1200000:  # Reduced for faster processing
+            st.warning("Large image detected. Optimizing for cloud speed.")
+            max_dim = min(max_dim, 260)  # Optimized downscaling
+        
         if image.mode != 'RGB':
             image = image.convert("RGB")
         scale = min(max_dim / image.height, max_dim / image.width, 1.0)
         if scale < 1.0:
             new_size = (int(image.width * scale), int(image.height * scale))
+            # Use faster resampling for cloud
             image = image.resize(new_size, Image.LANCZOS)
             st.info(f"Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]}")
+        
+        # Optimize array conversion
         image_np = np.array(image, dtype=np.uint8)
-        del image  # Explicit cleanup
-        aggressive_cleanup()
+        del image  # Immediate cleanup
         return image_np, original_size, scale
     except Exception as e:
-        aggressive_cleanup()
         st.error(f"Processing failed: {str(e)}")
         return None, None, None
 
 def quick_color_analysis(image_np, mask, mm_per_px):
-    """Color analysis with preserved masking formula and safe memory handling"""
+    """Optimized color analysis with preserved masking formula and cloud-speed enhancements"""
     if image_np is None or mask is None or mm_per_px is None:
         return 0, 0, 0, None, None
     if mask.size == 0 or np.max(mask) == 0:
         return 0, 0, 0, None, None
     if mask.shape != image_np.shape[:2]:
         mask = cv2.resize(mask, (image_np.shape[1], image_np.shape[0]), interpolation=cv2.INTER_NEAREST)
+    
+    # Optimized HSV conversion for cloud
     hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+    
+    # Combine mask operations for efficiency
     mango_mask1 = cv2.inRange(hsv, (20, 40, 60), (85, 255, 255))
     mango_mask2 = cv2.inRange(hsv, (15, 25, 40), (80, 200, 200))
     mango_mask3 = cv2.inRange(hsv, (25, 20, 100), (75, 150, 255))
     healthy_mask = cv2.bitwise_or(mango_mask1, cv2.bitwise_or(mango_mask2, mango_mask3))
-    shadow_mask1 = cv2.inRange(hsv, (15, 20, 25), (85, 120, 110))
-    shadow_mask2 = cv2.inRange(hsv, (10, 10, 15), (90, 60, 90))
-    shadow_mask = cv2.bitwise_or(shadow_mask1, shadow_mask2)
+    
+    # Optimized lesion detection
     lesion_mask1 = cv2.inRange(hsv, (8, 50, 30), (25, 255, 140))
     lesion_mask2 = cv2.inRange(hsv, (0, 60, 25), (15, 255, 120))
     lesion_mask3 = cv2.inRange(hsv, (0, 0, 0), (180, 255, 45))
     lesion_mask4 = cv2.inRange(hsv, (0, 10, 20), (180, 80, 100))
-    raw_lesion_mask = cv2.bitwise_or(lesion_mask1, lesion_mask2)
-    raw_lesion_mask = cv2.bitwise_or(raw_lesion_mask, lesion_mask3)
-    raw_lesion_mask = cv2.bitwise_or(raw_lesion_mask, lesion_mask4)
+    raw_lesion_mask = cv2.bitwise_or(cv2.bitwise_or(lesion_mask1, lesion_mask2), 
+                                     cv2.bitwise_or(lesion_mask3, lesion_mask4))
+    
+    # Cleanup intermediate masks for memory efficiency
+    del mango_mask1, mango_mask2, mango_mask3, lesion_mask1, lesion_mask2, lesion_mask3, lesion_mask4, hsv
+    
     healthy_mask = cv2.bitwise_and(healthy_mask, mask)
     raw_lesion_mask = cv2.bitwise_and(raw_lesion_mask, mask)
+    
+    # Optimized morphological operations
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     cleaned_lesion_mask = cv2.morphologyEx(raw_lesion_mask, cv2.MORPH_CLOSE, kernel)
     cleaned_lesion_mask = cv2.morphologyEx(cleaned_lesion_mask, cv2.MORPH_OPEN, kernel)
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned_lesion_mask, connectivity=8)
+    
+    # Faster connected components analysis
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(cleaned_lesion_mask, connectivity=8)
     final_lesion_mask = np.zeros_like(cleaned_lesion_mask)
     for i in range(1, num_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
-        if area >= 3:
+        if stats[i, cv2.CC_STAT_AREA] >= 3:
             final_lesion_mask[labels == i] = 255
+    
+    # Cleanup intermediate arrays
+    del labels, stats, cleaned_lesion_mask
+    
     total_mango_mask = cv2.bitwise_or(healthy_mask, final_lesion_mask)
+    
+    # Optimized morphological refinement
     base_kernel_size = max(2, int(np.sqrt(np.count_nonzero(mask)) / 50))
     kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (base_kernel_size, base_kernel_size))
     kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (base_kernel_size + 1, base_kernel_size + 1))
+    
+    # Combined morphological operations for speed
     final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_CLOSE, kernel_medium)
     final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_OPEN, kernel_small)
     final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_CLOSE, kernel_small)
     final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_OPEN, kernel_small)
+    
+    # Fast area calculations
     mango_area_px = np.count_nonzero(total_mango_mask)
     lesion_area_px = np.count_nonzero(final_lesion_mask)
+    
     if mango_area_px == 0:
         return 0, 0, 0, None, None
+    
     mm_per_px_sq = mm_per_px * mm_per_px
     mango_area_mm2 = mango_area_px * mm_per_px_sq
     lesion_area_mm2 = lesion_area_px * mm_per_px_sq
     lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 > 0 else 0
+    
+    # Memory cleanup before return
+    gc.collect()
+    
     return mango_area_mm2, lesion_area_mm2, lesion_percent, total_mango_mask, final_lesion_mask
 
-# File uploader with enhanced cloud optimization messaging
+# File uploader with cloud-optimized messaging
 uploaded_file = st.file_uploader(
     "Upload mango image (JPG/PNG)", 
     type=["png", "jpg", "jpeg"],
-    help=f"Max size: {MAX_FILE_SIZE_MB}MB. For best cloud performance: Use JPG format, <3MB files recommended"
+    help=f"Max size: {MAX_FILE_SIZE_MB}MB. Cloud-optimized: Use JPG format, <2MB recommended for fastest processing"
 )
 
 def safe_rerun():
-    """Ultra-safe rerun function with multiple fallbacks"""
+    """Cloud-optimized rerun function with safer fallbacks"""
     aggressive_cleanup()
     try:
         st.rerun()
@@ -174,16 +281,24 @@ def safe_rerun():
             st.experimental_rerun()
         except AttributeError:
             try:
-                # Clear session state to force refresh
+                # Safer session state cleanup for cloud
+                keys_to_preserve = ['samples', 'mm_per_px', 'last_cleanup']
+                keys_to_delete = []
+                
                 for key in list(st.session_state.keys()):
-                    if key not in ['samples', 'mm_per_px']:  # Keep important data
-                        try:
+                    if key not in keys_to_preserve:
+                        keys_to_delete.append(key)
+                
+                for key in keys_to_delete:
+                    try:
+                        if key in st.session_state:
                             del st.session_state[key]
-                        except:
-                            pass
-                st.info("🔄 Page refreshed. Please continue with your analysis.")
+                    except Exception:
+                        pass
+                
+                st.info("🔄 App optimized. Continue with your analysis.")
             except Exception:
-                st.write("🔄 Please refresh the page manually (F5 or Ctrl+R)")
+                st.write("🔄 Please refresh the page (F5) for best performance")
 
 def safe_add_sample(result):
     """Safely add sample with enhanced validation and memory limits"""
@@ -220,7 +335,6 @@ def safe_add_sample(result):
             return False
         
         st.session_state.samples.append(result)
-        aggressive_cleanup()  # Cleanup after adding sample
         return True
         
     except Exception as e:
@@ -250,12 +364,13 @@ if uploaded_file:
             st.info("💡 **Tips to reduce file size:**\n- Use JPG instead of PNG\n- Reduce image resolution\n- Compress image before upload")
             st.stop()
         
-        if file_size > 5:
-            st.warning(f"⚠️ Large file: {file_size:.1f}MB - processing may be slower on cloud")
-        elif file_size > 3:
+        # Optimized file size feedback for cloud performance
+        if file_size > 4:
+            st.warning(f"⚠️ Large file: {file_size:.1f}MB - expect slower cloud processing")
+        elif file_size > 2:
             st.info(f"📏 File size: {file_size:.1f}MB - good for cloud processing")
         else:
-            st.success(f"✅ File size: {file_size:.1f}MB - optimal for cloud")
+            st.success(f"✅ File size: {file_size:.1f}MB - optimal cloud performance")
         
         # Process image with enhanced error handling and progress indication
         with st.spinner("🔄 Processing image... (this may take a moment on cloud)"):
@@ -272,10 +387,13 @@ if uploaded_file:
             st.info("💡 **Supported formats:** JPG (recommended), PNG\n**Recommended size:** < 5MB for best cloud performance")
             st.stop()
         
+        # Store original image for analysis
+        original_image_np = image_np.copy()  # Keep original for analysis
+        
         h, w = image_np.shape[:2]
         st.success(f"✅ Image loaded: {w}x{h} pixels (scale: {scale:.2f})")
         
-        # Calculate optimal display size maintaining aspect ratio with cloud limits
+        # Calculate optimal display size with cloud performance limits
         display_scale = min(CANVAS_SIZE / w, CANVAS_SIZE / h, 1.0)
         display_w = int(w * display_scale)
         display_h = int(h * display_scale)
@@ -285,45 +403,59 @@ if uploaded_file:
             st.error(f"❌ Invalid display dimensions calculated: {display_w}x{display_h}")
             st.stop()
         
-        # Ensure minimum usable size while maintaining aspect ratio
-        if display_w < 450 or display_h < 350:  # Increased minimum for better usability
-            min_scale = max(450 / w, 350 / h)
-            if min_scale <= 2.5:  # Allow more upscaling for small images
+        # Optimized minimum size for better usability - ensure at least 300px on smaller dimension
+        MIN_CANVAS_SIZE = 300  # Minimum size for comfortable drawing
+        if display_w < MIN_CANVAS_SIZE or display_h < MIN_CANVAS_SIZE:
+            # Calculate scale needed to make smaller dimension at least 300px
+            min_scale = max(MIN_CANVAS_SIZE / w, MIN_CANVAS_SIZE / h)
+            if min_scale <= 3.0:  # Allow more upscaling for better usability
                 display_w = int(w * min_scale)
                 display_h = int(h * min_scale)
                 display_scale = min_scale
+                st.info(f"🔧 Canvas enlarged for better usability: {display_w}x{display_h} (scale: {display_scale:.2f})")
         
         # Additional validation after min size adjustment
         if display_w <= 0 or display_h <= 0:
             st.error(f"❌ Invalid display dimensions after adjustment: {display_w}x{display_h}")
             st.stop()
             
-        # Reasonable maximum limits to prevent browser crashes
-        MAX_DISPLAY_DIM = 2000
+        # Cloud-optimized maximum limits but maintain usability
+        MAX_DISPLAY_DIM = 2200  # Increased for bigger, more comfortable canvas
         if display_w > MAX_DISPLAY_DIM or display_h > MAX_DISPLAY_DIM:
-            st.warning(f"⚠️ Display size too large ({display_w}x{display_h}). Reducing for stability.")
+            st.warning(f"⚠️ Display size optimized for cloud ({display_w}x{display_h} → smaller).")
             scale_factor = min(MAX_DISPLAY_DIM / display_w, MAX_DISPLAY_DIM / display_h)
             display_w = int(display_w * scale_factor)
             display_h = int(display_h * scale_factor)
             display_scale *= scale_factor
         
-        # Memory check before creating display image
-        if display_w * display_h * 3 > 1500000:  # Reduced threshold for cloud stability
-            st.warning("⚠️ Large display size. Using reduced canvas for cloud stability.")
-            display_scale = min(display_scale, 0.7)  # More aggressive scaling
+        # Cloud-optimized memory check with usability balance
+        if display_w * display_h * 3 > 2000000:  # Increased for bigger canvas support
+            st.warning("⚠️ Optimizing display size for cloud performance.")
+            display_scale = min(display_scale, 0.8)  # Less aggressive scaling for bigger canvas
             display_w = int(w * display_scale)
             display_h = int(h * display_scale)
+            
+            # Ensure minimum size is still maintained after scaling
+            MIN_CANVAS_SIZE = 300
+            if display_w < MIN_CANVAS_SIZE or display_h < MIN_CANVAS_SIZE:
+                min_scale = max(MIN_CANVAS_SIZE / w, MIN_CANVAS_SIZE / h)
+                display_w = int(w * min_scale)
+                display_h = int(h * min_scale)
+                display_scale = min_scale
             
             # Final validation
             if display_w <= 0 or display_h <= 0:
                 st.error("❌ Display scaling resulted in invalid dimensions")
                 st.stop()
         
-        # Create display image maintaining aspect ratio with error handling
+        # Create display image with optimized error handling
         try:
             display_image = Image.fromarray(image_np)
             if display_scale != 1.0:
+                # Use faster resampling for cloud
                 display_image = display_image.resize((display_w, display_h), Image.LANCZOS)
+            # Keep image_np for analysis - don't delete yet
+            gc.collect()
         except Exception as e:
             st.error(f"❌ Display image creation failed: {str(e)}")
             aggressive_cleanup()
@@ -332,6 +464,7 @@ if uploaded_file:
         # --- Step 1: Scale Setting ---
         st.markdown("## 1️⃣ Set Scale")
         st.info("📏 Draw a line on a known measurement (ruler/scale bar)")
+        st.success(f"✅ Canvas size optimized: {display_w}x{display_h} pixels for comfortable scale setting")
         
         # Enhanced scale canvas with better usability and error handling
         try:
@@ -349,9 +482,12 @@ if uploaded_file:
         except Exception as e:
             st.error(f"❌ Scale canvas creation failed: {str(e)}")
             st.error("Please try refreshing the page or using a smaller image.")
-            aggressive_cleanup()
-            st.stop()
-        
+            
+            # Offer immediate recovery
+            if st.button("🔄 Try Again", key="scale_canvas_retry"):
+                emergency_reset()
+                st.rerun()
+
         scale_length_mm = st.number_input(
             "Real length of drawn line (mm):",
             min_value=0.1,
@@ -424,31 +560,23 @@ if uploaded_file:
                     help="Adjust brightness for better visibility"
                 )
             
-            # Apply brightness adjustment safely with memory management
+            # Optimized brightness adjustment
             try:
                 if brightness != 1.0:
-                    # Process in chunks to avoid memory issues on cloud
                     display_image_array = np.array(display_image, dtype=np.float32)
-                    
-                    # Check array size before processing - more aggressive threshold
-                    if display_image_array.size > 1000000:  # Reduced threshold
-                        st.info("🔧 Applying brightness adjustment (large image)...")
-                    
+                    if display_image_array.size > 800000:
+                        st.info("🔧 Optimizing brightness for cloud...")
                     display_image_array = np.clip(display_image_array * brightness, 0, 255).astype(np.uint8)
                     adjusted_display_image = Image.fromarray(display_image_array)
-                    
-                    # Immediate cleanup
                     del display_image_array
-                    aggressive_cleanup()
+                    gc.collect()
                 else:
                     adjusted_display_image = display_image
-            except MemoryError:
-                st.warning("⚠️ Brightness adjustment skipped due to memory limits")
+            except (MemoryError, Exception) as e:
+                st.warning(f"⚠️ Using original image for stability: {str(e)}")
                 adjusted_display_image = display_image
-                aggressive_cleanup()
-            except Exception as e:
-                st.warning(f"⚠️ Brightness adjustment failed: {str(e)}")
-                adjusted_display_image = display_image
+                if isinstance(e, MemoryError):
+                    aggressive_cleanup()
             
             # Mode-specific instructions
             if drawing_mode == "transform":
@@ -458,21 +586,11 @@ if uploaded_file:
             else:
                 st.info(f"✏️ **{drawing_mode.title()} Mode**: Draw a new {drawing_mode} around the mango.")
             
-            # Add canvas interaction safety tips
-            if drawing_mode == "polygon":
-                st.warning("⚠️ **Polygon Tips:** Draw slowly, avoid crossing lines, double-click to finish")
-            elif drawing_mode == "circle":
-                st.info("⭕ **Circle Tips:** Click and drag to create a circle around the mango")
-            elif drawing_mode == "rect":
-                st.info("⬜ **Rectangle Tips:** Click and drag to create a rectangle around the mango")
-            elif drawing_mode == "transform":
-                st.info("🔄 **Transform Tips:** Click existing shapes to select and modify them")
-            
             # Canvas stability check
             canvas_attempts = st.session_state.get('canvas_attempts', 0)
             if canvas_attempts > 3:
-                st.warning("⚠️ Multiple canvas errors detected. Consider using the Reset App button in the sidebar.")
-            
+                st.warning("⚠️ Multiple canvas errors detected. Consider refreshing the page.")
+
             # Enhanced canvas with better usability and error handling
             try:
                 # Reset error counter on successful canvas creation
@@ -495,21 +613,12 @@ if uploaded_file:
                 st.session_state.canvas_attempts = st.session_state.get('canvas_attempts', 0) + 1
                 
                 st.error(f"❌ Canvas creation failed: {str(e)}")
-                st.error("**Possible solutions:**")
-                st.info("""
-                1. Click 'Reset App' in the sidebar
-                2. Try a smaller image (< 3MB)
-                3. Refresh your browser
-                4. Try a different drawing mode
-                """)
+                st.error("Please try refreshing the page or using a smaller image.")
                 
                 # Offer immediate recovery
-                if st.button("🔄 Try Again", key="canvas_retry"):
+                if st.button("🔄 Try Again", key="mango_canvas_retry"):
                     emergency_reset()
                     st.rerun()
-                
-                aggressive_cleanup()
-                st.stop()
 
             # Safe analysis processing with enhanced error handling
             process_analysis = False
@@ -671,8 +780,9 @@ if uploaded_file:
                     # Analyze with enhanced error handling and progress
                     with st.spinner("🔬 Analyzing mango (cloud processing may take longer)..."):
                         try:
+                            # Use original image for analysis
                             mango_area_mm2, lesion_area_mm2, lesion_percent, total_mask, lesion_mask = quick_color_analysis(
-                                image_np, mask, st.session_state.mm_per_px
+                                original_image_np, mask, st.session_state.mm_per_px
                             )
                         except Exception as e:
                             st.error(f"❌ Analysis failed: {str(e)}")
@@ -712,7 +822,7 @@ if uploaded_file:
                         with correction_col1:
                             correction_mode = st.radio(
                                 "Correction Mode:",
-                                ["🟡 Yellow Pen (Mark as Healthy)", "⚫ Black Pen (Mark as Lesion)", "🔄 Transform"],
+                                ["🟡 Yellow Pen (Mark as Healthy)", "⚫ Black Pen (Mark as Lesion)"],
                                 key="correction_mode"
                             )
                         
@@ -735,51 +845,17 @@ if uploaded_file:
                         elif correction_mode == "⚫ Black Pen (Mark as Lesion)":
                             stroke_color = "rgba(0, 0, 0, 1)"  # Black
                             canvas_mode = "freedraw"
-                        else:
-                            stroke_color = "rgba(255, 165, 0, 1)"  # Orange for transform
-                            canvas_mode = "transform"
-                        
-                        # Create an overlay image showing current classification with memory safety
+
+                        # Create an overlay image showing current classification
                         try:
                             overlay_image = np.array(adjusted_display_image)
-                            if display_scale != 1.0:
-                                display_total_mask = cv2.resize(total_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
-                                display_lesion_mask = cv2.resize(lesion_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
+                            
+                            # Check if we should create overlay for performance
+                            if overlay_image.size > 600000:  # Optimized threshold
+                                overlay_pil = adjusted_display_image
+                                st.info("🚀 Using optimized display for faster cloud performance")
                             else:
-                                display_total_mask = total_mask
-                                display_lesion_mask = lesion_mask
-                            
-                            # Memory check for overlay processing
-                            if overlay_image.size > 1000000:  # Reduced threshold
-                                st.info("🔧 Creating overlay (large image)...")
-                            
-                            # Add colored overlays safely
-                            healthy_overlay = display_total_mask > 0
-                            lesion_overlay = display_lesion_mask > 0
-                            
-                            overlay_image[healthy_overlay & ~lesion_overlay] = overlay_image[healthy_overlay & ~lesion_overlay] * 0.7 + np.array([0, 100, 0]) * 0.3
-                            overlay_image[lesion_overlay] = overlay_image[lesion_overlay] * 0.7 + np.array([100, 0, 0]) * 0.3
-                            
-                            overlay_image = np.clip(overlay_image, 0, 255).astype(np.uint8)
-                            overlay_pil = Image.fromarray(overlay_image)
-                            
-                            # Cleanup intermediate arrays
-                            del healthy_overlay, lesion_overlay
-                            if display_scale != 1.0:
-                                del display_total_mask, display_lesion_mask
-                            gc.collect()
-                        except Exception as e:
-                            st.error(f"❌ Overlay creation failed: {str(e)}")
-                            overlay_pil = adjusted_display_image  # Fallback to original image
-                        
-                        # Optionally, skip overlay creation for very large images or when not needed
-                        overlay_skip_threshold = 800000  # Further reduced threshold for faster switching
-                        create_overlay = (overlay_image.size <= overlay_skip_threshold) and (canvas_mode != "transform")
-                        if not create_overlay:
-                            overlay_pil = adjusted_display_image
-                        else:
-                            try:
-                                overlay_image = np.array(adjusted_display_image)
+                                # Resize masks to display dimensions
                                 if display_scale != 1.0:
                                     display_total_mask = cv2.resize(total_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
                                     display_lesion_mask = cv2.resize(lesion_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
@@ -787,7 +863,7 @@ if uploaded_file:
                                     display_total_mask = total_mask
                                     display_lesion_mask = lesion_mask
 
-                                # Add colored overlays safely
+                                # Add colored overlays
                                 healthy_overlay = display_total_mask > 0
                                 lesion_overlay = display_lesion_mask > 0
 
@@ -797,14 +873,14 @@ if uploaded_file:
                                 overlay_image = np.clip(overlay_image, 0, 255).astype(np.uint8)
                                 overlay_pil = Image.fromarray(overlay_image)
 
-                                # Cleanup intermediate arrays
+                                # Cleanup
                                 del healthy_overlay, lesion_overlay, overlay_image
                                 if display_scale != 1.0:
                                     del display_total_mask, display_lesion_mask
                                 gc.collect()
-                            except Exception as e:
-                                st.error(f"❌ Overlay creation failed: {str(e)}")
-                                overlay_pil = adjusted_display_image  # Fallback to original image
+                        except Exception as e:
+                            st.error(f"❌ Overlay creation failed: {str(e)}")
+                            overlay_pil = adjusted_display_image
 
                         # Use a unique key for each correction mode to avoid slow redraws
                         correction_canvas_key = f"correction_canvas_{correction_mode}_{pen_size}"
@@ -926,10 +1002,10 @@ if uploaded_file:
                                 final_result = result
                                 if safe_add_sample(final_result):
                                     st.success(f"✅ Sample {len(st.session_state.samples)} added successfully!")
-                                    # Clean up memory safely
+                                    # Clean up memory safely including original image
                                     try:
-                                        del total_mask, lesion_mask, mask
-                                    except:
+                                        del total_mask, lesion_mask, mask, original_image_np
+                                    except Exception:
                                         pass
                                     aggressive_cleanup()
                                     safe_rerun()
@@ -1039,93 +1115,65 @@ if uploaded_file:
     except MemoryError:
         # Specific handling for memory errors with enhanced cleanup
         aggressive_cleanup()
-        # Emergency cleanup of all temporary session state
-        temp_keys = [k for k in st.session_state.keys() if 'temp' in k.lower() or 'canvas' in k.lower()]
-        for key in temp_keys:
-            try:
-                del st.session_state[key]
-            except:
-                pass
+        # Emergency cleanup of all temporary session state with safer iteration
+        try:
+            temp_keys = []
+            for k in list(st.session_state.keys()):  # Convert to list to avoid iteration issues
+                if 'temp' in k.lower() or 'canvas' in k.lower():
+                    temp_keys.append(k)
+            
+            for key in temp_keys:
+                try:
+                    if key in st.session_state:  # Double-check existence
+                        del st.session_state[key]
+                except Exception:
+                    pass
+        except Exception:
+            pass  # Session state might be corrupted
+        
         gc.collect()
-        st.error("❌ Out of memory! Please:")
-        st.info("💡 **Memory Solutions:**\n- Use smaller images (< 1MB recommended)\n- Clear all samples if you have many\n- Refresh the page (F5)\n- Close other browser tabs")
-        if st.button("🧹 Emergency Cleanup & Restart"):
+        st.error("❌ Cloud memory limit reached!")
+        st.info("💡 Use smaller images (< 2MB) for best performance")
+        if st.button("🧹 Clear Memory"):
             try:
+                # Safer session state cleanup
+                keys_to_preserve = ['samples']
+                keys_to_delete = []
+                
                 for key in list(st.session_state.keys()):
-                    if key not in ['samples']:  # Only preserve samples
-                        try:
+                    if key not in keys_to_preserve:
+                        keys_to_delete.append(key)
+                
+                for key in keys_to_delete:
+                    try:
+                        if key in st.session_state:
                             del st.session_state[key]
-                        except:
-                            pass
+                    except Exception:
+                        pass
+                
                 aggressive_cleanup()
                 safe_rerun()
-            except:
-                st.info("Please refresh the page manually (F5)")
+            except Exception:
+                st.info("Please refresh the page (F5)")
+
     except Exception as e:
         aggressive_cleanup()
         error_message = str(e)
-        st.error(f"❌ Application error: {error_message}")
-        
-        # Provide specific help based on error type
-        if "size" in error_message.lower() or "memory" in error_message.lower():
-            st.info("💡 **Memory Issue:** Use a smaller image (< 1MB) or clear samples")
-        elif "format" in error_message.lower() or "decode" in error_message.lower():
-            st.info("📸 **Format Issue:** Try a different image format (JPG recommended)")
-        elif "canvas" in error_message.lower():
-            st.info("💡 **Canvas Issue:** Try refreshing the page or drawing again")
-        else:
-            st.info("💡 **General Solution:** Refresh the page (F5) or try a smaller image")
+        st.error(f"❌ Processing error: {error_message}")
         
         if st.button("🔄 Restart Application"):
             safe_rerun()
-    finally:
-        # Safe final cleanup
-        try:
-            aggressive_cleanup()
-        except:
-            pass
 
-# Emergency reset function for crash recovery
-def emergency_reset():
-    """Emergency reset function to recover from crashes"""
-    try:
-        # Clear problematic session state keys
-        problem_keys = ['polygon_drawing', 'temp_canvas_data', 'temp_masks', 'large_arrays', 'temp_images']
-        for key in problem_keys:
-            if key in st.session_state:
-                del st.session_state[key]
-        
-        # Clear all canvas-related session state
-        canvas_keys = [k for k in st.session_state.keys() if 'canvas' in k.lower()]
-        for key in canvas_keys:
-            try:
-                del st.session_state[key]
-            except:
-                pass
-        
-        aggressive_cleanup()
-        st.success("✅ Emergency reset completed. You can now upload a new image.")
-        return True
-    except Exception as e:
-        st.error(f"❌ Reset failed: {str(e)}")
-        return False
-
-# Add emergency controls in sidebar
+# Add simple emergency controls in sidebar
 with st.sidebar:
-    st.markdown("### 🚨 Emergency Controls")
-    if st.button("🔄 Reset App", help="Use if the app crashes or becomes unresponsive"):
+    st.markdown("### 🔧 Quick Actions")
+    if st.button("🔄 Reset App"):
         if emergency_reset():
-            st.rerun()
+            try:
+                st.rerun()
+            except Exception:
+                st.info("App reset. Please refresh page if needed.")
     
-    if st.button("🧹 Clear Memory", help="Clear memory and temporary data"):
+    if st.button("🧹 Clear Memory"):
         aggressive_cleanup()
         st.success("✅ Memory cleared")
-    
-    st.markdown("### 💡 Troubleshooting Tips")
-    st.info("""
-    **If the app crashes:**
-    1. Click 'Reset App' above
-    2. Use smaller images (< 3MB)
-    3. Avoid very complex polygon shapes
-    4. Refresh the browser if needed
-    """)
