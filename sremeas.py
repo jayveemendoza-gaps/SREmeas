@@ -26,8 +26,9 @@ MEMORY_CLEANUP_INTERVAL = 60
 MAX_SAMPLES = 25
 
 # Cloud stability constants
-CANVAS_UPDATE_THROTTLE = 0.5  # Minimum seconds between canvas updates
-TRANSFORM_MODE_WARNING_SHOWN = False
+CANVAS_UPDATE_THROTTLE = 0.1  # Reduced to 100ms for better responsiveness
+TRANSFORM_DEBOUNCE_TIME = 0.05  # 50ms debounce for rapid events
+MAX_CANVAS_OPERATIONS = 50  # Limit canvas operations before cleanup
 
 # Initialize session state efficiently
 session_defaults = {
@@ -39,7 +40,9 @@ session_defaults = {
     "canvas_key_counter": 0,
     "transform_mode_active": False,
     "last_canvas_update": 0,
-    "transform_warning_shown": False
+    "transform_warning_shown": False,
+    "canvas_operation_count": 0,
+    "last_canvas_error": 0
 }
 
 for key, default in session_defaults.items():
@@ -124,14 +127,41 @@ def safe_canvas_reset():
                 except Exception:
                     pass
         
+        # Reset canvas operation tracking
+        st.session_state.canvas_operation_count = 0
+        st.session_state.last_canvas_update = 0
+        st.session_state.last_canvas_error = 0
+        
         # Increment counter to force new canvas key
         st.session_state.canvas_key_counter = st.session_state.get('canvas_key_counter', 0) + 1
         st.session_state.polygon_drawing = False
         st.session_state.transform_mode_active = False
         
+        # Force garbage collection
+        gc.collect()
+        
         return True
     except Exception:
         return False
+
+def is_canvas_stable():
+    """Check if canvas is in a stable state for operations"""
+    current_time = time.time()
+    
+    # Check for recent errors
+    last_error = st.session_state.get('last_canvas_error', 0)
+    if current_time - last_error < 2.0:  # 2 second cooldown after errors
+        return False
+    
+    # Check operation count
+    op_count = st.session_state.get('canvas_operation_count', 0)
+    if op_count > MAX_CANVAS_OPERATIONS:
+        # Auto-reset if too many operations
+        safe_canvas_reset()
+        st.session_state.canvas_operation_count = 0
+        return False
+    
+    return True
 
 @st.cache_data(max_entries=1, ttl=90, show_spinner=False)
 def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
@@ -456,6 +486,7 @@ if uploaded_file:
                 # Cloud-optimized controls
                 if st.button("🔄 Reset Canvas", help="Clear canvas and fix any issues"):
                     safe_canvas_reset()
+                    st.success("✅ Canvas reset completed")
                 
                 # Emergency stability button
                 if st.button("🚨 Emergency Reset", help="Use if app becomes unresponsive", type="secondary"):
@@ -463,9 +494,12 @@ if uploaded_file:
                         st.success("✅ Emergency reset completed")
                         safe_rerun()
                 
-                # Performance tip for cloud users
+                # Performance monitoring for transform mode
                 if drawing_mode == "transform":
-                    st.caption("💡 **Cloud Tip**: Drag shapes slowly to prevent crashes")
+                    op_count = st.session_state.get('canvas_operation_count', 0)
+                    if op_count > 0:
+                        st.caption(f"💡 Operations: {op_count}/{MAX_CANVAS_OPERATIONS}")
+                    st.caption("⚠️ **Cloud Tip**: Drag shapes slowly to prevent crashes")
 
             # Apply brightness adjustment
             if brightness != 1.0:
@@ -491,51 +525,95 @@ if uploaded_file:
             else:
                 st.info(instruction_text)
             
-            # Main analysis canvas with SessionInfo error protection and cloud throttling
+            # Main analysis canvas with enhanced stability controls
             canvas_key = f"mango_canvas_{st.session_state.get('canvas_key_counter', 0)}"
             
-            # Cloud stability: Add update throttling for transform mode
+            # Enhanced cloud stability checks
             current_time = time.time()
+            canvas_stable = is_canvas_stable()
+            
+            if not canvas_stable:
+                st.warning("🔄 Canvas stabilizing... Please wait a moment before continuing.")
+                st.stop()
+            
+            # Smart update throttling based on mode
             can_update_canvas = True
+            last_update = st.session_state.get('last_canvas_update', 0)
             
             if drawing_mode == "transform":
-                last_update = st.session_state.get('last_canvas_update', 0)
+                # More aggressive throttling for transform mode
                 if current_time - last_update < CANVAS_UPDATE_THROTTLE:
+                    can_update_canvas = False
+                else:
+                    st.session_state.last_canvas_update = current_time
+                    # Increment operation counter
+                    st.session_state.canvas_operation_count = st.session_state.get('canvas_operation_count', 0) + 1
+            else:
+                # Light throttling for other modes
+                if current_time - last_update < TRANSFORM_DEBOUNCE_TIME:
                     can_update_canvas = False
                 else:
                     st.session_state.last_canvas_update = current_time
             
             try:
-                # Use throttled updates for transform mode in cloud
-                update_streamlit = can_update_canvas if drawing_mode == "transform" else True
+                # Conditional canvas rendering with error recovery
+                if can_update_canvas:
+                    canvas_result = st_canvas(
+                        fill_color="rgba(255,165,0,0.2)",
+                        stroke_width=3,
+                        stroke_color="rgba(255,165,0,1)",
+                        background_image=adjusted_display_image,
+                        update_streamlit=True,
+                        height=display_h,
+                        width=display_w,
+                        drawing_mode=drawing_mode,
+                        key=canvas_key,
+                    )
+                else:
+                    # Use cached canvas result or create with minimal updates
+                    try:
+                        canvas_result = st_canvas(
+                            fill_color="rgba(255,165,0,0.2)",
+                            stroke_width=3,
+                            stroke_color="rgba(255,165,0,1)",
+                            background_image=adjusted_display_image,
+                            update_streamlit=False,  # Disabled for stability
+                            height=display_h,
+                            width=display_w,
+                            drawing_mode=drawing_mode,
+                            key=canvas_key,
+                        )
+                    except Exception:
+                        canvas_result = None
                 
-                canvas_result = st_canvas(
-                    fill_color="rgba(255,165,0,0.2)",
-                    stroke_width=3,
-                    stroke_color="rgba(255,165,0,1)",
-                    background_image=adjusted_display_image,
-                    update_streamlit=update_streamlit,
-                    height=display_h,
-                    width=display_w,
-                    drawing_mode=drawing_mode,
-                    key=canvas_key,
-                )
-                
-                # Show throttling indicator for transform mode
-                if drawing_mode == "transform" and not can_update_canvas:
-                    st.caption("⏳ Canvas updates throttled for cloud stability...")
+                # Show status for transform mode
+                if drawing_mode == "transform":
+                    op_count = st.session_state.get('canvas_operation_count', 0)
+                    if not can_update_canvas:
+                        st.caption("⏳ Throttling active - canvas updating smoothly...")
+                    elif op_count > MAX_CANVAS_OPERATIONS * 0.8:
+                        st.caption("⚠️ High activity detected - canvas will auto-reset soon for stability")
                 
             except Exception as e:
                 error_msg = str(e)
+                st.session_state.last_canvas_error = current_time
+                
                 if "SessionInfo" in error_msg or "before it was initialized" in error_msg:
-                    st.warning("🔄 Canvas needs reset. Please click 'Reset Canvas' button above.")
+                    st.warning("🔄 Canvas session expired. Auto-resetting...")
+                    safe_canvas_reset()
                     canvas_result = None
-                elif "overloaded" in error_msg.lower() or "timeout" in error_msg.lower():
-                    st.error("☁️ Cloud overload detected! Try drawing more slowly or use circle/rect mode.")
-                    st.info("🔧 **Quick Fix**: Click 'Emergency Reset' button above to restore stability.")
+                elif any(keyword in error_msg.lower() for keyword in ["overload", "timeout", "memory", "limit"]):
+                    st.error("☁️ Cloud resource limit reached! Auto-recovering...")
+                    if emergency_reset():
+                        st.info("✅ Stability restored. You can continue drawing.")
+                    canvas_result = None
+                elif "duplicate" in error_msg.lower() or "key" in error_msg.lower():
+                    st.warning("� Canvas key conflict detected. Resetting...")
+                    safe_canvas_reset()
                     canvas_result = None
                 else:
-                    st.error(f"❌ Canvas error: {error_msg}")
+                    st.error(f"❌ Canvas error: {error_msg[:100]}...")
+                    st.info("💡 Try switching to circle/rect mode or click 'Emergency Reset'")
                     canvas_result = None
 
             # Process analysis
