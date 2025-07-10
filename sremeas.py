@@ -31,7 +31,9 @@ session_defaults = {
     "mm_per_px": None,
     "polygon_drawing": False,
     "last_cleanup": time.time(),
-    "last_cache_clear": 0
+    "last_cache_clear": 0,
+    "canvas_key_counter": 0,
+    "transform_mode_active": False
 }
 
 for key, default in session_defaults.items():
@@ -100,6 +102,27 @@ def emergency_reset():
                     pass
         
         aggressive_cleanup()
+        return True
+    except Exception:
+        return False
+
+def safe_canvas_reset():
+    """Safely reset canvas state without causing loops"""
+    try:
+        # Clear canvas-related session state keys
+        canvas_keys = [k for k in st.session_state.keys() if 'canvas' in k.lower() and k != 'canvas_key_counter']
+        for key in canvas_keys:
+            if key in st.session_state:
+                try:
+                    del st.session_state[key]
+                except Exception:
+                    pass
+        
+        # Increment counter to force new canvas key
+        st.session_state.canvas_key_counter = st.session_state.get('canvas_key_counter', 0) + 1
+        st.session_state.polygon_drawing = False
+        st.session_state.transform_mode_active = False
+        
         return True
     except Exception:
         return False
@@ -404,10 +427,23 @@ if uploaded_file:
                     ["circle", "rect", "polygon", "transform"],
                     horizontal=True
                 )
+                
+                # Handle transform mode carefully
+                if drawing_mode == "transform":
+                    if not st.session_state.get("transform_mode_active", False):
+                        st.session_state.transform_mode_active = True
+                        st.info("⚠️ Transform mode: Click existing shapes to modify them. If you encounter errors, switch to another mode.")
+                elif st.session_state.get("transform_mode_active", False):
+                    st.session_state.transform_mode_active = False
+                    safe_canvas_reset()
             
             with col2:
                 brightness = st.slider("🔆 Brightness:", 0.7, 1.5, 1.0, 0.1)
-            
+                
+                # Add manual reset option
+                if st.button("🔄 Reset Canvas", help="Clear canvas and fix any issues"):
+                    safe_canvas_reset()
+
             # Apply brightness adjustment
             if brightness != 1.0:
                 try:
@@ -428,19 +464,31 @@ if uploaded_file:
             }
             st.info(mode_instructions.get(drawing_mode, ""))
             
-            # Main analysis canvas
-            canvas_result = st_canvas(
-                fill_color="rgba(255,165,0,0.2)",
-                stroke_width=3,
-                stroke_color="rgba(255,165,0,1)",
-                background_image=adjusted_display_image,
-                update_streamlit=True,
-                height=display_h,
-                width=display_w,
-                drawing_mode=drawing_mode,
-                key="mango_canvas_persistent",
-            )
+            # Main analysis canvas with SessionInfo error protection
+            canvas_key = f"mango_canvas_{st.session_state.get('canvas_key_counter', 0)}"
             
+            try:
+                canvas_result = st_canvas(
+                    fill_color="rgba(255,165,0,0.2)",
+                    stroke_width=3,
+                    stroke_color="rgba(255,165,0,1)",
+                    background_image=adjusted_display_image,
+                    update_streamlit=True,
+                    height=display_h,
+                    width=display_w,
+                    drawing_mode=drawing_mode,
+                    key=canvas_key,
+                )
+                
+            except Exception as e:
+                error_msg = str(e)
+                if "SessionInfo" in error_msg or "before it was initialized" in error_msg:
+                    st.warning("🔄 Canvas needs reset. Please click 'Reset Canvas' button above.")
+                    canvas_result = None
+                else:
+                    st.error(f"❌ Canvas error: {error_msg}")
+                    canvas_result = None
+
             # Process analysis
             process_analysis = False
             if (canvas_result and hasattr(canvas_result, 'image_data') and 
