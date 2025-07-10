@@ -25,6 +25,10 @@ MAX_FILE_SIZE_MB = 8
 MEMORY_CLEANUP_INTERVAL = 60
 MAX_SAMPLES = 25
 
+# Cloud stability constants
+CANVAS_UPDATE_THROTTLE = 0.5  # Minimum seconds between canvas updates
+TRANSFORM_MODE_WARNING_SHOWN = False
+
 # Initialize session state efficiently
 session_defaults = {
     "samples": [],
@@ -33,7 +37,9 @@ session_defaults = {
     "last_cleanup": time.time(),
     "last_cache_clear": 0,
     "canvas_key_counter": 0,
-    "transform_mode_active": False
+    "transform_mode_active": False,
+    "last_canvas_update": 0,
+    "transform_warning_shown": False
 }
 
 for key, default in session_defaults.items():
@@ -432,7 +438,14 @@ if uploaded_file:
                 if drawing_mode == "transform":
                     if not st.session_state.get("transform_mode_active", False):
                         st.session_state.transform_mode_active = True
-                        st.info("⚠️ Transform mode: Click existing shapes to modify them. If you encounter errors, switch to another mode.")
+                        # Show cloud-specific warning for transform mode
+                        if not st.session_state.get("transform_warning_shown", False):
+                            st.warning("⚠️ **Cloud Performance Tip**: Transform mode can be resource-intensive. For best results:\n"
+                                     "• Drag shapes **slowly** to avoid crashes\n"
+                                     "• Use other drawing modes (circle/rect) for faster performance\n"
+                                     "• If app becomes unresponsive, click 'Reset Canvas'")
+                            st.session_state.transform_warning_shown = True
+                        st.info("🔄 Transform mode: Click existing shapes to modify them. **Drag slowly** to prevent cloud overload.")
                 elif st.session_state.get("transform_mode_active", False):
                     st.session_state.transform_mode_active = False
                     safe_canvas_reset()
@@ -440,9 +453,19 @@ if uploaded_file:
             with col2:
                 brightness = st.slider("🔆 Brightness:", 0.7, 1.5, 1.0, 0.1)
                 
-                # Add manual reset option
+                # Cloud-optimized controls
                 if st.button("🔄 Reset Canvas", help="Clear canvas and fix any issues"):
                     safe_canvas_reset()
+                
+                # Emergency stability button
+                if st.button("🚨 Emergency Reset", help="Use if app becomes unresponsive", type="secondary"):
+                    if emergency_reset():
+                        st.success("✅ Emergency reset completed")
+                        safe_rerun()
+                
+                # Performance tip for cloud users
+                if drawing_mode == "transform":
+                    st.caption("💡 **Cloud Tip**: Drag shapes slowly to prevent crashes")
 
             # Apply brightness adjustment
             if brightness != 1.0:
@@ -455,35 +478,61 @@ if uploaded_file:
             else:
                 adjusted_display_image = display_image
             
-            # Mode instructions
+            # Mode instructions with cloud-specific tips
             mode_instructions = {
-                "transform": "🔄 **Transform Mode**: Click and drag shapes to move, drag corners/edges to resize.",
-                "polygon": "📐 **Polygon Mode**: Click to place points, double-click to close polygon.",
-                "circle": "✏️ **Circle Mode**: Draw a new circle around the mango.",
-                "rect": "✏️ **Rectangle Mode**: Draw a new rectangle around the mango."
+                "transform": "🔄 **Transform Mode**: Click and drag shapes to move, drag corners/edges to resize. ⚠️ **Cloud users**: Drag slowly to prevent crashes!",
+                "polygon": "📐 **Polygon Mode**: Click to place points, double-click to close polygon. ✅ **Cloud-friendly**",
+                "circle": "✏️ **Circle Mode**: Draw a new circle around the mango. ✅ **Cloud-optimized**",
+                "rect": "✏️ **Rectangle Mode**: Draw a new rectangle around the mango. ✅ **Cloud-optimized**"
             }
-            st.info(mode_instructions.get(drawing_mode, ""))
+            instruction_text = mode_instructions.get(drawing_mode, "")
+            if drawing_mode == "transform":
+                st.warning(instruction_text)
+            else:
+                st.info(instruction_text)
             
-            # Main analysis canvas with SessionInfo error protection
+            # Main analysis canvas with SessionInfo error protection and cloud throttling
             canvas_key = f"mango_canvas_{st.session_state.get('canvas_key_counter', 0)}"
             
+            # Cloud stability: Add update throttling for transform mode
+            current_time = time.time()
+            can_update_canvas = True
+            
+            if drawing_mode == "transform":
+                last_update = st.session_state.get('last_canvas_update', 0)
+                if current_time - last_update < CANVAS_UPDATE_THROTTLE:
+                    can_update_canvas = False
+                else:
+                    st.session_state.last_canvas_update = current_time
+            
             try:
+                # Use throttled updates for transform mode in cloud
+                update_streamlit = can_update_canvas if drawing_mode == "transform" else True
+                
                 canvas_result = st_canvas(
                     fill_color="rgba(255,165,0,0.2)",
                     stroke_width=3,
                     stroke_color="rgba(255,165,0,1)",
                     background_image=adjusted_display_image,
-                    update_streamlit=True,
+                    update_streamlit=update_streamlit,
                     height=display_h,
                     width=display_w,
                     drawing_mode=drawing_mode,
                     key=canvas_key,
                 )
                 
+                # Show throttling indicator for transform mode
+                if drawing_mode == "transform" and not can_update_canvas:
+                    st.caption("⏳ Canvas updates throttled for cloud stability...")
+                
             except Exception as e:
                 error_msg = str(e)
                 if "SessionInfo" in error_msg or "before it was initialized" in error_msg:
                     st.warning("🔄 Canvas needs reset. Please click 'Reset Canvas' button above.")
+                    canvas_result = None
+                elif "overloaded" in error_msg.lower() or "timeout" in error_msg.lower():
+                    st.error("☁️ Cloud overload detected! Try drawing more slowly or use circle/rect mode.")
+                    st.info("🔧 **Quick Fix**: Click 'Emergency Reset' button above to restore stability.")
                     canvas_result = None
                 else:
                     st.error(f"❌ Canvas error: {error_msg}")
@@ -622,6 +671,10 @@ if uploaded_file:
 
                         st.caption("🟢 Green tint = Healthy areas | 🔴 Red tint = Detected lesions")
                         
+                        # Initialize corrected result storage
+                        if 'corrected_result' not in st.session_state:
+                            st.session_state.corrected_result = None
+                        
                         # Apply corrections
                         if st.session_state.get('apply_corrections', False):
                             st.session_state.apply_corrections = False
@@ -673,6 +726,14 @@ if uploaded_file:
                                         corrected_lesion_area_mm2 = corrected_lesion_area_px * mm_per_px_sq
                                         corrected_lesion_percent = (corrected_lesion_area_mm2 / corrected_mango_area_mm2 * 100)
                                         
+                                        # Store corrected result in session state
+                                        st.session_state.corrected_result = {
+                                            "Sample": len(st.session_state.samples) + 1,
+                                            "Area (mm²)": round(corrected_mango_area_mm2, 1),
+                                            "Lesions (mm²)": round(corrected_lesion_area_mm2, 1),
+                                            "Lesion %": round(corrected_lesion_percent, 1)
+                                        }
+                                        
                                         # Display corrected results
                                         st.markdown("### 📊 Corrected Results")
                                         corr_col1, corr_col2, corr_col3 = st.columns([1, 1, 1])
@@ -689,24 +750,43 @@ if uploaded_file:
                                             st.metric("Corrected Lesions", f"{corrected_lesion_area_mm2:.1f} mm²")
                                             st.metric("Corrected %", f"{corrected_lesion_percent:.1f}%", delta=f"{lesion_change:+.1f}%")
                                         
-                                        # Update result
-                                        result = {
-                                            "Sample": len(st.session_state.samples) + 1,
-                                            "Area (mm²)": round(corrected_mango_area_mm2, 1),
-                                            "Lesions (mm²)": round(corrected_lesion_area_mm2, 1),
-                                            "Lesion %": round(corrected_lesion_percent, 1)
-                                        }
-                                        
-                                        st.dataframe(pd.DataFrame([result]), use_container_width=True)
+                                        # Show corrected results table
+                                        st.dataframe(pd.DataFrame([st.session_state.corrected_result]), use_container_width=True)
                                         st.success("✅ Corrections applied!")
+                                    else:
+                                        st.session_state.corrected_result = None
+                                        st.error("❌ Corrected area calculation failed")
+                                else:
+                                    st.session_state.corrected_result = None
+                                    st.warning("⚠️ No corrections detected")
                             except Exception as e:
                                 st.error(f"❌ Correction error: {str(e)}")
+                                st.session_state.corrected_result = None
                         
-                        if st.button("✅ Add Sample", type="primary"):
-                            if safe_add_sample(result):
-                                st.success(f"✅ Sample {len(st.session_state.samples)} added successfully!")
-                                aggressive_cleanup()
-                                safe_rerun()
+                        # Add Sample Buttons Section
+                        st.markdown("### 📋 Add Sample to Table")
+                        button_col1, button_col2 = st.columns(2)
+                        
+                        with button_col1:
+                            if st.button("✅ Add Original Sample", key="add_original_btn", type="primary", use_container_width=True):
+                                if safe_add_sample(result):
+                                    st.success(f"✅ Sample {len(st.session_state.samples)} added (original values)!")
+                                    # Clear corrected result when adding original
+                                    st.session_state.corrected_result = None
+                                    aggressive_cleanup()
+                                    safe_rerun()
+                        
+                        with button_col2:
+                            if st.session_state.corrected_result is not None:
+                                if st.button("✅ Add Corrected Sample", key="add_corrected_btn", type="primary", use_container_width=True):
+                                    if safe_add_sample(st.session_state.corrected_result):
+                                        st.success(f"✅ Sample {len(st.session_state.samples)} added (corrected values)!")
+                                        # Clear corrected result after adding
+                                        st.session_state.corrected_result = None
+                                        aggressive_cleanup()
+                                        safe_rerun()
+                            else:
+                                st.button("⚪ Add Corrected Sample", disabled=True, use_container_width=True, help="Apply corrections first by clicking 'Recalculate'")
                     else:
                         st.warning("⚠️ No mango detected. Try adjusting your selection or brightness.")
                         
