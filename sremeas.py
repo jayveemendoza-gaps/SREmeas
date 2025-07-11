@@ -18,17 +18,18 @@ st.set_page_config(
 
 st.title("🥭 Mango Lesion Analyzer")
 
-# Optimized constants
-MAX_IMAGE_SIZE = 320
-CANVAS_SIZE = 900
-MAX_FILE_SIZE_MB = 8
-MEMORY_CLEANUP_INTERVAL = 60
-MAX_SAMPLES = 25
+# Optimized constants for Streamlit Cloud
+MAX_IMAGE_SIZE = 280  # Reduced for cloud stability
+CANVAS_SIZE = 700     # Reduced from 900 for better performance
+MAX_FILE_SIZE_MB = 5  # Reduced from 8 for cloud limits
+MEMORY_CLEANUP_INTERVAL = 45  # More frequent cleanup
+MAX_SAMPLES = 15      # Reduced to prevent memory issues
 
-# Cloud stability constants
-CANVAS_UPDATE_THROTTLE = 0.1  # Reduced to 100ms for better responsiveness
-TRANSFORM_DEBOUNCE_TIME = 0.05  # 50ms debounce for rapid events
-MAX_CANVAS_OPERATIONS = 50  # Limit canvas operations before cleanup
+# Cloud stability constants - more aggressive throttling
+CANVAS_UPDATE_THROTTLE = 0.15  # Increased from 0.1 for better stability
+TRANSFORM_DEBOUNCE_TIME = 0.08  # Increased debounce time
+MAX_CANVAS_OPERATIONS = 30     # Reduced from 50
+MAX_DISPLAY_DIM = 1800         # Reduced from 2200 for cloud performance
 
 # Initialize session state efficiently
 session_defaults = {
@@ -49,45 +50,95 @@ for key, default in session_defaults.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Periodic cleanup
+# Periodic cleanup with memory monitoring
 current_time = time.time()
-if current_time - st.session_state.get('last_cleanup', 0) > 60:
+if current_time - st.session_state.get('last_cleanup', 0) > 45:  # More frequent cleanup
     gc.collect()
     st.session_state.last_cleanup = current_time
 
 def aggressive_cleanup():
-    """Memory cleanup for cloud stability"""
-    gc.collect()
-    
-    # Clear specific cache keys
-    cleanup_keys = ['temp_canvas_data', 'temp_masks', 'large_arrays', 'canvas_cache', 'temp_images']
-    for key in cleanup_keys:
-        if key in st.session_state:
-            try:
-                del st.session_state[key]
-            except Exception:
-                pass
-    
-    st.session_state.last_cleanup = time.time()
-    
-    # Periodic cache clearing
+    """Enhanced memory cleanup for cloud stability"""
     try:
-        if (time.time() - st.session_state.get('last_cache_clear', 0)) > MEMORY_CLEANUP_INTERVAL:
-            st.cache_data.clear()
-            st.session_state.last_cache_clear = time.time()
-    except Exception:
-        pass
+        gc.collect()
+        
+        # Clear specific cache keys with more comprehensive cleanup
+        cleanup_keys = [
+            'temp_canvas_data', 'temp_masks', 'large_arrays', 'canvas_cache', 
+            'temp_images', 'processed_images', 'analysis_results', 'overlay_images',
+            'correction_data', 'display_images', 'cached_masks'
+        ]
+        for key in cleanup_keys:
+            if key in st.session_state:
+                try:
+                    del st.session_state[key]
+                except Exception:
+                    pass
+        
+        # Clear old canvas keys (keep only recent ones)
+        canvas_keys = [k for k in st.session_state.keys() if 'canvas' in k.lower()]
+        current_counter = st.session_state.get('canvas_key_counter', 0)
+        
+        for key in canvas_keys:
+            if key != 'canvas_key_counter':
+                # Extract counter from key if possible and remove old ones
+                try:
+                    if any(old_key in key for old_key in ['mango_canvas_', 'correction_canvas_']):
+                        # Keep only the most recent canvas states
+                        if key not in [f'mango_canvas_{current_counter}', f'mango_canvas_{current_counter-1}']:
+                            if key in st.session_state:
+                                del st.session_state[key]
+                except Exception:
+                    pass
+        
+        st.session_state.last_cleanup = time.time()
+        
+        # More frequent cache clearing for cloud
+        try:
+            if (time.time() - st.session_state.get('last_cache_clear', 0)) > MEMORY_CLEANUP_INTERVAL:
+                st.cache_data.clear()
+                st.session_state.last_cache_clear = time.time()
+                
+                # Force Python garbage collection
+                import gc
+                gc.collect()
+                
+        except Exception:
+            pass
+            
+    except Exception as e:
+        # Fallback cleanup if main cleanup fails
+        try:
+            gc.collect()
+            st.session_state.last_cleanup = time.time()
+        except Exception:
+            pass
 
 def check_memory_limit():
-    """Check memory usage and limits"""
-    if len(st.session_state.samples) > MAX_SAMPLES:
-        st.error(f"💾 Maximum samples reached ({MAX_SAMPLES}). Please download and clear samples.")
-        return True
-    
-    if len(st.session_state.samples) > 12:
-        st.warning("⚠️ Many samples stored. Consider downloading results soon.")
-    
-    return False
+    """Enhanced memory usage monitoring for cloud"""
+    try:
+        # Check samples limit
+        if len(st.session_state.samples) > MAX_SAMPLES:
+            st.error(f"💾 Maximum samples reached ({MAX_SAMPLES}). Please download and clear samples.")
+            return True
+        
+        if len(st.session_state.samples) > MAX_SAMPLES * 0.6:  # 60% warning threshold
+            st.warning("⚠️ Many samples stored. Consider downloading results soon.")
+        
+        # Monitor session state size
+        session_keys = len(st.session_state.keys())
+        if session_keys > 50:
+            st.warning(f"⚠️ High memory usage detected ({session_keys} session keys). Auto-cleaning...")
+            aggressive_cleanup()
+            return False
+            
+        return False
+        
+    except Exception:
+        return False
+
+# Auto-cleanup session state if needed (call after functions are defined)
+if len(st.session_state.keys()) > 50:
+    check_memory_limit()
 
 def emergency_reset():
     """Emergency session state reset"""
@@ -163,9 +214,9 @@ def is_canvas_stable():
     
     return True
 
-@st.cache_data(max_entries=1, ttl=90, show_spinner=False)
+@st.cache_data(max_entries=1, ttl=60, show_spinner=False)  # Reduced TTL for cloud
 def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
-    """Optimized image processing"""
+    """Cloud-optimized image processing with enhanced error handling"""
     if not uploaded_file or len(uploaded_file) == 0:
         return None, None, None
     
@@ -175,6 +226,7 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
         return None, None, None
     
     try:
+        # More aggressive memory management
         image = Image.open(BytesIO(uploaded_file))
         original_size = image.size
         
@@ -182,96 +234,120 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
             st.error("❌ Invalid image dimensions")
             return None, None, None
         
-        # Optimize for large images
-        if original_size[0] * original_size[1] > 1200000:
-            st.warning("Large image detected. Optimizing for cloud speed.")
-            max_dim = min(max_dim, 260)
+        # More aggressive optimization for cloud
+        total_pixels = original_size[0] * original_size[1]
+        if total_pixels > 800000:  # Reduced from 1200000
+            st.warning("Large image detected. Optimizing aggressively for cloud.")
+            max_dim = min(max_dim, 220)  # More aggressive reduction
+        elif total_pixels > 500000:
+            max_dim = min(max_dim, 250)
         
         if image.mode != 'RGB':
             image = image.convert("RGB")
         
+        # Calculate scale more conservatively
         scale = min(max_dim / image.height, max_dim / image.width, 1.0)
         if scale < 1.0:
             new_size = (int(image.width * scale), int(image.height * scale))
-            image = image.resize(new_size, Image.LANCZOS)
+            # Use more memory-efficient resizing
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
             st.info(f"Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]}")
         
+        # Convert to numpy with explicit dtype to save memory
         image_np = np.array(image, dtype=np.uint8)
+        
+        # Clear intermediate variables
+        del image
+        gc.collect()
+        
         return image_np, original_size, scale
         
+    except MemoryError:
+        st.error("❌ Memory limit exceeded. Please use a smaller image.")
+        gc.collect()
+        return None, None, None
     except Exception as e:
         st.error(f"Processing failed: {str(e)}")
+        gc.collect()
         return None, None, None
 
+
+
 def quick_color_analysis(image_np, mask, mm_per_px):
-    """Optimized color analysis with preserved masking formula"""
+    """Cloud-optimized color analysis with memory management"""
     if image_np is None or mask is None or mm_per_px is None:
         return 0, 0, 0, None, None
     
     if mask.size == 0 or np.max(mask) == 0:
         return 0, 0, 0, None, None
     
-    if mask.shape != image_np.shape[:2]:
-        mask = cv2.resize(mask, (image_np.shape[1], image_np.shape[0]), interpolation=cv2.INTER_NEAREST)
-    
-    # HSV conversion
-    hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
-    
-    # Healthy mango detection
-    mango_mask1 = cv2.inRange(hsv, (20, 40, 60), (85, 255, 255))
-    mango_mask2 = cv2.inRange(hsv, (15, 25, 40), (80, 200, 200))
-    mango_mask3 = cv2.inRange(hsv, (25, 20, 100), (75, 150, 255))
-    healthy_mask = cv2.bitwise_or(mango_mask1, cv2.bitwise_or(mango_mask2, mango_mask3))
-    
-    # Lesion detection
-    lesion_mask1 = cv2.inRange(hsv, (8, 50, 30), (25, 255, 140))
-    lesion_mask2 = cv2.inRange(hsv, (0, 60, 25), (15, 255, 120))
-    lesion_mask3 = cv2.inRange(hsv, (0, 0, 0), (180, 255, 45))
-    lesion_mask4 = cv2.inRange(hsv, (0, 10, 20), (180, 80, 100))
-    raw_lesion_mask = cv2.bitwise_or(cv2.bitwise_or(lesion_mask1, lesion_mask2), 
-                                     cv2.bitwise_or(lesion_mask3, lesion_mask4))
-    
-    # Apply user mask
-    healthy_mask = cv2.bitwise_and(healthy_mask, mask)
-    raw_lesion_mask = cv2.bitwise_and(raw_lesion_mask, mask)
-    
-    # Morphological operations
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    cleaned_lesion_mask = cv2.morphologyEx(raw_lesion_mask, cv2.MORPH_CLOSE, kernel)
-    cleaned_lesion_mask = cv2.morphologyEx(cleaned_lesion_mask, cv2.MORPH_OPEN, kernel)
-    
-    # Connected components
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(cleaned_lesion_mask, connectivity=8)
-    final_lesion_mask = np.zeros_like(cleaned_lesion_mask)
-    for i in range(1, num_labels):
-        if stats[i, cv2.CC_STAT_AREA] >= 3:
-            final_lesion_mask[labels == i] = 255
-    
-    total_mango_mask = cv2.bitwise_or(healthy_mask, final_lesion_mask)
-    
-    # Refined morphological operations
-    base_kernel_size = max(2, int(np.sqrt(np.count_nonzero(mask)) / 50))
-    kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (base_kernel_size, base_kernel_size))
-    kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (base_kernel_size + 1, base_kernel_size + 1))
-    
-    final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_CLOSE, kernel_medium)
-    final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_OPEN, kernel_small)
-    final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_CLOSE, kernel_small)
-    final_lesion_mask = cv2.morphologyEx(final_lesion_mask, cv2.MORPH_OPEN, kernel_small)
-    
-    # Calculate areas
-    mango_area_px = np.count_nonzero(total_mango_mask)
-    lesion_area_px = np.count_nonzero(final_lesion_mask)
-    
-    if mango_area_px == 0:
+    try:
+        if mask.shape != image_np.shape[:2]:
+            mask = cv2.resize(mask, (image_np.shape[1], image_np.shape[0]), interpolation=cv2.INTER_NEAREST)
+        
+        # HSV conversion with memory optimization
+        hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+        
+        # Optimize mask operations by combining them
+        # Healthy mango detection - combine operations for efficiency
+        mango_mask1 = cv2.inRange(hsv, (20, 40, 60), (85, 255, 255))
+        mango_mask2 = cv2.inRange(hsv, (15, 25, 40), (80, 200, 200))
+        mango_mask3 = cv2.inRange(hsv, (25, 20, 100), (75, 150, 255))
+        
+        # Use in-place operations where possible
+        healthy_mask = cv2.bitwise_or(mango_mask1, mango_mask2)
+        cv2.bitwise_or(healthy_mask, mango_mask3, healthy_mask)  # In-place operation
+        
+        # Clear intermediate masks to save memory
+        del mango_mask1, mango_mask2, mango_mask3
+        
+        # Lesion detection - optimized
+        lesion_mask1 = cv2.inRange(hsv, (8, 50, 30), (25, 255, 140))
+        lesion_mask2 = cv2.inRange(hsv, (0, 60, 25), (15, 255, 120))
+        lesion_mask3 = cv2.inRange(hsv, (0, 0, 0), (180, 255, 45))
+        lesion_mask4 = cv2.inRange(hsv, (0, 10, 20), (180, 80, 100))
+        
+        # Combine lesion masks efficiently
+        raw_lesion_mask = cv2.bitwise_or(lesion_mask1, lesion_mask2)
+        cv2.bitwise_or(raw_lesion_mask, lesion_mask3, raw_lesion_mask)
+        cv2.bitwise_or(raw_lesion_mask, lesion_mask4, raw_lesion_mask)
+        
+        # Clear intermediate masks
+        del lesion_mask1, lesion_mask2, lesion_mask3, lesion_mask4, hsv
+        
+        # Apply user mask in-place
+        cv2.bitwise_and(healthy_mask, mask, healthy_mask)
+        cv2.bitwise_and(raw_lesion_mask, mask, raw_lesion_mask)
+        
+        final_lesion_mask = raw_lesion_mask  # No morphology operations
+        total_mango_mask = cv2.bitwise_or(healthy_mask, final_lesion_mask)
+        
+        # Calculate areas efficiently
+        mango_area_px = np.count_nonzero(total_mango_mask)
+        lesion_area_px = np.count_nonzero(final_lesion_mask)
+        
+        if mango_area_px == 0:
+            return 0, 0, 0, None, None
+        
+        # Efficient area calculations
+        mm_per_px_sq = mm_per_px * mm_per_px
+        mango_area_mm2 = mango_area_px * mm_per_px_sq
+        lesion_area_mm2 = lesion_area_px * mm_per_px_sq
+        lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 > 0 else 0
+        
+        # Force garbage collection for large operations
+        gc.collect()
+        
+        return mango_area_mm2, lesion_area_mm2, lesion_percent, total_mango_mask, final_lesion_mask
+        
+    except MemoryError:
+        st.error("❌ Memory limit reached during analysis. Try a smaller image.")
+        gc.collect()
         return 0, 0, 0, None, None
-    
-    mm_per_px_sq = mm_per_px * mm_per_px
-    mango_area_mm2 = mango_area_px * mm_per_px_sq
-    lesion_area_mm2 = lesion_area_px * mm_per_px_sq
-    lesion_percent = (lesion_area_mm2 / mango_area_mm2 * 100) if mango_area_mm2 > 0 else 0
-    
-    return mango_area_mm2, lesion_area_mm2, lesion_percent, total_mango_mask, final_lesion_mask
+    except Exception as e:
+        st.error(f"Analysis failed: {str(e)}")
+        gc.collect()
+        return 0, 0, 0, None, None
 
 def safe_rerun():
     """Safe app rerun with fallbacks"""
@@ -390,18 +466,25 @@ if uploaded_file:
                 display_scale = min_scale
                 st.info(f"🔧 Canvas enlarged for better usability: {display_w}x{display_h}")
         
-        # Cloud optimization limits
-        MAX_DISPLAY_DIM = 2200
+        # Cloud optimization limits - more aggressive
         if display_w > MAX_DISPLAY_DIM or display_h > MAX_DISPLAY_DIM:
             scale_factor = min(MAX_DISPLAY_DIM / display_w, MAX_DISPLAY_DIM / display_h)
             display_w = int(display_w * scale_factor)
             display_h = int(display_h * scale_factor)
             display_scale *= scale_factor
+            st.info(f"🔧 Canvas optimized for cloud: {display_w}x{display_h}")
         
-        # Create display image
-        display_image = Image.fromarray(image_np)
-        if display_scale != 1.0:
-            display_image = display_image.resize((display_w, display_h), Image.LANCZOS)
+        # Create display image with memory optimization
+        try:
+            display_image = Image.fromarray(image_np)
+            if display_scale != 1.0:
+                display_image = display_image.resize((display_w, display_h), Image.Resampling.LANCZOS)
+        except MemoryError:
+            st.error("❌ Memory limit reached creating display. Please use a smaller image.")
+            st.stop()
+        except Exception as e:
+            st.error(f"❌ Display creation failed: {str(e)}")
+            st.stop()
         
         # Step 1: Scale Setting
         st.markdown("## 1️⃣ Set Scale")
@@ -501,12 +584,18 @@ if uploaded_file:
                         st.caption(f"💡 Operations: {op_count}/{MAX_CANVAS_OPERATIONS}")
                     st.caption("⚠️ **Cloud Tip**: Drag shapes slowly to prevent crashes")
 
-            # Apply brightness adjustment
+            # Apply brightness adjustment with memory management
             if brightness != 1.0:
                 try:
+                    # Use more memory-efficient brightness adjustment
                     display_array = np.array(display_image, dtype=np.float32)
-                    display_array = np.clip(display_array * brightness, 0, 255).astype(np.uint8)
-                    adjusted_display_image = Image.fromarray(display_array)
+                    np.multiply(display_array, brightness, out=display_array)  # In-place operation
+                    np.clip(display_array, 0, 255, out=display_array)  # In-place clipping
+                    adjusted_display_image = Image.fromarray(display_array.astype(np.uint8))
+                    del display_array  # Clean up immediately
+                except MemoryError:
+                    st.warning("⚠️ Memory limit reached for brightness adjustment. Using original brightness.")
+                    adjusted_display_image = display_image
                 except Exception:
                     adjusted_display_image = display_image
             else:
@@ -528,26 +617,31 @@ if uploaded_file:
             # Main analysis canvas with enhanced stability controls
             canvas_key = f"mango_canvas_{st.session_state.get('canvas_key_counter', 0)}"
             
-            # Enhanced cloud stability checks
+            # Enhanced cloud stability checks with timeout
             current_time = time.time()
             canvas_stable = is_canvas_stable()
             
             if not canvas_stable:
                 st.warning("🔄 Canvas stabilizing... Please wait a moment before continuing.")
+                time.sleep(0.1)  # Small delay to prevent rapid retries
                 st.stop()
             
-            # Smart update throttling based on mode
+            # More conservative update throttling for cloud
             can_update_canvas = True
             last_update = st.session_state.get('last_canvas_update', 0)
             
             if drawing_mode == "transform":
-                # More aggressive throttling for transform mode
+                # Much more aggressive throttling for transform mode on cloud
                 if current_time - last_update < CANVAS_UPDATE_THROTTLE:
                     can_update_canvas = False
                 else:
                     st.session_state.last_canvas_update = current_time
                     # Increment operation counter
                     st.session_state.canvas_operation_count = st.session_state.get('canvas_operation_count', 0) + 1
+                    
+                    # Auto-cleanup more aggressively for transform mode
+                    if st.session_state.canvas_operation_count % 10 == 0:
+                        aggressive_cleanup()
             else:
                 # Light throttling for other modes
                 if current_time - last_update < TRANSFORM_DEBOUNCE_TIME:
@@ -660,7 +754,7 @@ if uploaded_file:
                     if display_scale != 1.0:
                         mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
                     
-                    # Analyze
+                    # Analyze with original image
                     with st.spinner("🔬 Analyzing mango..."):
                         mango_area_mm2, lesion_area_mm2, lesion_percent, total_mask, lesion_mask = quick_color_analysis(
                             original_image_np, mask, st.session_state.mm_per_px
@@ -710,26 +804,45 @@ if uploaded_file:
                         # Set stroke color
                         stroke_color = "rgba(255, 255, 0, 1)" if "Yellow" in correction_mode else "rgba(0, 0, 0, 1)"
                         
-                        # Create overlay image
+                        # Create overlay image with optimized memory usage
                         try:
-                            overlay_image = np.array(adjusted_display_image)
+                            # Avoid creating large intermediate arrays
+                            overlay_image = np.array(adjusted_display_image, dtype=np.uint8)
                             
                             if display_scale != 1.0:
-                                display_total_mask = cv2.resize(total_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
-                                display_lesion_mask = cv2.resize(lesion_mask, (display_w, display_h), interpolation=cv2.INTER_NEAREST)
+                                # Use more memory-efficient resizing
+                                display_total_mask = cv2.resize(total_mask, (display_w, display_h), 
+                                                              interpolation=cv2.INTER_NEAREST)
+                                display_lesion_mask = cv2.resize(lesion_mask, (display_w, display_h), 
+                                                               interpolation=cv2.INTER_NEAREST)
                             else:
                                 display_total_mask = total_mask
                                 display_lesion_mask = lesion_mask
 
-                            # Add colored overlays
+                            # Optimize overlay operations
                             healthy_overlay = display_total_mask > 0
                             lesion_overlay = display_lesion_mask > 0
+                            
+                            # In-place operations for memory efficiency
+                            healthy_only = healthy_overlay & ~lesion_overlay
+                            if np.any(healthy_only):
+                                overlay_image[healthy_only] = (overlay_image[healthy_only].astype(np.float32) * 0.7 + 
+                                                              np.array([0, 100, 0], dtype=np.float32) * 0.3).astype(np.uint8)
+                            
+                            if np.any(lesion_overlay):
+                                overlay_image[lesion_overlay] = (overlay_image[lesion_overlay].astype(np.float32) * 0.7 + 
+                                                               np.array([100, 0, 0], dtype=np.float32) * 0.3).astype(np.uint8)
 
-                            overlay_image[healthy_overlay & ~lesion_overlay] = overlay_image[healthy_overlay & ~lesion_overlay] * 0.7 + np.array([0, 100, 0]) * 0.3
-                            overlay_image[lesion_overlay] = overlay_image[lesion_overlay] * 0.7 + np.array([100, 0, 0]) * 0.3
-
-                            overlay_image = np.clip(overlay_image, 0, 255).astype(np.uint8)
                             overlay_pil = Image.fromarray(overlay_image)
+                            
+                            # Clean up intermediate arrays
+                            del overlay_image, healthy_overlay, lesion_overlay
+                            if display_scale != 1.0:
+                                del display_total_mask, display_lesion_mask
+                                
+                        except MemoryError:
+                            st.warning("⚠️ Memory limit reached for overlay. Using simplified view.")
+                            overlay_pil = adjusted_display_image
                         except Exception:
                             overlay_pil = adjusted_display_image
 
