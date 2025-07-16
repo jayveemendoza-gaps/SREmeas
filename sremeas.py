@@ -838,7 +838,7 @@ if uploaded_file:
                         
                         # Manual correction tools
                         st.markdown("### ✏️ Manual Corrections")
-                        st.info("Use colored pens to correct misclassified areas")
+                        st.info("🎨 Use colored pens to correct misclassified areas. You can switch between colors and draw multiple corrections on the same canvas.")
                         
                         correction_col1, correction_col2 = st.columns([1, 1])
                         
@@ -846,13 +846,19 @@ if uploaded_file:
                             correction_mode = st.radio(
                                 "Correction Mode:",
                                 ["🟡 Yellow Pen (Mark as Healthy)", "⚫ Black Pen (Mark as Lesion)"],
-                                key="correction_mode"
+                                key="correction_mode",
+                                help="Switch between modes to apply different corrections. Previously drawn marks will be preserved."
                             )
                         
                         with correction_col2:
                             pen_size = st.slider("Pen Size:", 2, 15, 5, key="pen_size")
                             if st.button("🔄 Recalculate"):
                                 st.session_state.apply_corrections = True
+                            if st.button("🗑️ Clear Corrections", help="Clear all yellow and black markings"):
+                                # Reset the correction canvas by incrementing counter
+                                st.session_state.canvas_key_counter = st.session_state.get('canvas_key_counter', 0) + 1
+                                st.session_state.corrected_result = None
+                                st.info("✅ Corrections cleared. You can start drawing again.")
                         
                         # Set stroke color
                         stroke_color = "rgba(255, 255, 0, 1)" if "Yellow" in correction_mode else "rgba(0, 0, 0, 1)"
@@ -899,8 +905,8 @@ if uploaded_file:
                         except Exception:
                             overlay_pil = adjusted_display_image
 
-                        # Correction canvas
-                        correction_canvas_key = f"correction_canvas_{correction_mode}_{pen_size}"
+                        # Correction canvas - use stable key to preserve markings
+                        correction_canvas_key = f"correction_canvas_{st.session_state.get('canvas_key_counter', 0)}"
                         correction_canvas = st_canvas(
                             fill_color="rgba(0,0,0,0)",
                             stroke_width=pen_size,
@@ -914,6 +920,7 @@ if uploaded_file:
                         )
 
                         st.caption("🟢 Green tint = Healthy areas | 🔴 Red tint = Detected lesions")
+                        st.caption("💡 **Tip**: Switch between Yellow and Black pen to make different corrections on the same canvas")
                         
                         # Initialize corrected result storage
                         if 'corrected_result' not in st.session_state:
@@ -927,22 +934,38 @@ if uploaded_file:
                                 if correction_canvas.image_data is not None:
                                     correction_data = correction_canvas.image_data
                                     
-                                    # Extract correction masks
+                                    # Extract correction masks for both colors
                                     yellow_correction = np.zeros((correction_data.shape[0], correction_data.shape[1]), dtype=np.uint8)
                                     black_correction = np.zeros((correction_data.shape[0], correction_data.shape[1]), dtype=np.uint8)
                                     
-                                    # Detect strokes
-                                    yellow_pixels = ((correction_data[:,:,0] > 200) & 
-                                                   (correction_data[:,:,1] > 200) & 
-                                                   (correction_data[:,:,2] < 100) & 
-                                                   (correction_data[:,:,3] > 0))
+                                    # Detect yellow strokes (more tolerant thresholds)
+                                    yellow_pixels = ((correction_data[:,:,0] > 180) & 
+                                                   (correction_data[:,:,1] > 180) & 
+                                                   (correction_data[:,:,2] < 120) & 
+                                                   (correction_data[:,:,3] > 50))
                                     yellow_correction[yellow_pixels] = 255
                                     
-                                    black_pixels = ((correction_data[:,:,0] < 50) & 
-                                                  (correction_data[:,:,1] < 50) & 
-                                                  (correction_data[:,:,2] < 50) & 
-                                                  (correction_data[:,:,3] > 0))
+                                    # Detect black strokes (more tolerant thresholds)
+                                    black_pixels = ((correction_data[:,:,0] < 80) & 
+                                                  (correction_data[:,:,1] < 80) & 
+                                                  (correction_data[:,:,2] < 80) & 
+                                                  (correction_data[:,:,3] > 50))
                                     black_correction[black_pixels] = 255
+                                    
+                                    # Show detection feedback
+                                    yellow_count = np.count_nonzero(yellow_correction)
+                                    black_count = np.count_nonzero(black_correction)
+                                    
+                                    if yellow_count > 0 or black_count > 0:
+                                        feedback_col1, feedback_col2 = st.columns(2)
+                                        with feedback_col1:
+                                            if yellow_count > 0:
+                                                st.success(f"🟡 Yellow corrections: {yellow_count} pixels")
+                                        with feedback_col2:
+                                            if black_count > 0:
+                                                st.success(f"⚫ Black corrections: {black_count} pixels")
+                                    else:
+                                        st.warning("⚠️ No corrections detected. Make sure to draw on the canvas before recalculating.")
                                     
                                     # Scale corrections
                                     if display_scale != 1.0:
