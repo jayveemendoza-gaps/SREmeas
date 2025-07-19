@@ -1,6 +1,6 @@
 
 import os
-os.environ["STREAMLIT_SERVER_PORT"] = "80"
+os.environ["STREAMLIT_SERVER_PORT"] = "8080"
 os.environ["STREAMLIT_SERVER_ADDRESS"] = "0.0.0.0"
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
