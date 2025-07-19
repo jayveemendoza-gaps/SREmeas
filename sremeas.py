@@ -7,6 +7,7 @@ from PIL import Image
 import gc
 from io import BytesIO
 import time
+import concurrent.futures
 
 # Cloud-optimized page config
 st.set_page_config(
@@ -26,12 +27,12 @@ MEMORY_CLEANUP_INTERVAL = 30  # More frequent cleanup
 MAX_SAMPLES = 12      # Reduced sample limit
 
 # Streamlit Cloud optimized constants - less aggressive, more stable
-CANVAS_UPDATE_THROTTLE = 0.1   # Reduced back for better responsiveness  
-TRANSFORM_DEBOUNCE_TIME = 0.15  # Balanced for cloud stability
-MAX_CANVAS_OPERATIONS = 25      # Increased for fewer resets
+CANVAS_UPDATE_THROTTLE = 0.15   # Balanced throttle for transform mode (stability + speed)
+TRANSFORM_DEBOUNCE_TIME = 0.13  # Balanced debounce for other modes
+MAX_CANVAS_OPERATIONS = 18      # Middle ground for max operations before auto-reset
 MAX_DISPLAY_DIM = 800           # More conservative for cloud memory
-CANVAS_ERROR_COOLDOWN = 1.5     # Shorter cooldown for better UX
-MAX_CONSECUTIVE_ERRORS = 5      # More tolerance before disable
+CANVAS_ERROR_COOLDOWN = 1.3     # Middle ground for error recovery cooldown
+MAX_CONSECUTIVE_ERRORS = 4      # Slightly higher tolerance before auto-reset
 
 # Initialize session state efficiently
 session_defaults = {
@@ -267,52 +268,64 @@ def is_canvas_stable():
 
 @st.cache_data(max_entries=1, ttl=60, show_spinner=False)  # Reduced TTL for cloud
 def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
-    """Cloud-optimized image processing with enhanced error handling"""
+    """Cloud-optimized image processing with enhanced error handling and basic enhancement"""
     if not uploaded_file or len(uploaded_file) == 0:
         return None, None, None
-    
+
     file_size_mb = len(uploaded_file) / (1024 * 1024)
     if file_size_mb > MAX_FILE_SIZE_MB:
         st.error(f"File too large: {file_size_mb:.1f}MB. Use files under {MAX_FILE_SIZE_MB}MB.")
         return None, None, None
-    
+
     try:
-        # More aggressive memory management
         image = Image.open(BytesIO(uploaded_file))
         original_size = image.size
-        
+
         if original_size[0] * original_size[1] == 0:
             st.error("❌ Invalid image dimensions")
             return None, None, None
-        
-        # Conservative optimization for Streamlit Cloud
+
         total_pixels = original_size[0] * original_size[1]
-        if total_pixels > 600000:  # Further reduced threshold
+        if total_pixels > 600000:
             st.warning("Large image detected. Optimizing for cloud.")
-            max_dim = min(max_dim, 200)  # More conservative
+            max_dim = min(max_dim, 200)
         elif total_pixels > 400000:
             max_dim = min(max_dim, 220)
-        
+
         if image.mode != 'RGB':
             image = image.convert("RGB")
-        
-        # Calculate scale more conservatively
+
         scale = min(max_dim / image.height, max_dim / image.width, 1.0)
         if scale < 1.0:
             new_size = (int(image.width * scale), int(image.height * scale))
-            # Use more memory-efficient resizing
             image = image.resize(new_size, Image.Resampling.LANCZOS)
             st.info(f"Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]}")
-        
-        # Convert to numpy with explicit dtype to save memory
+
+        # --- Enhancement: Lower shadows and increase saturation ---
+        import cv2
+        import numpy as np
+
         image_np = np.array(image, dtype=np.uint8)
-        
-        # Clear intermediate variables
+        img_hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+
+        # Reduce shadows: brighten dark pixels in V channel
+        v = img_hsv[:,:,2]
+        shadow_mask = v < 80
+        v[shadow_mask] = np.clip(v[shadow_mask] + 40, 0, 255)
+        img_hsv[:,:,2] = v
+
+        # Increase saturation
+        s = img_hsv[:,:,1]
+        s = np.clip(s * 1.25, 0, 255)
+        img_hsv[:,:,1] = s.astype(np.uint8)
+
+        image_np = cv2.cvtColor(img_hsv, cv2.COLOR_HSV2RGB)
+
         del image
         gc.collect()
-        
+
         return image_np, original_size, scale
-        
+
     except MemoryError:
         st.error("❌ Memory limit exceeded. Please use a smaller image.")
         gc.collect()
@@ -468,6 +481,12 @@ uploaded_file = st.file_uploader(
     help=f"Max size: {MAX_FILE_SIZE_MB}MB"
 )
 
+# Threaded execution helper
+def run_in_thread(func, *args, **kwargs):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        return future.result()
+
 if uploaded_file:
     try:
         # Memory check
@@ -489,9 +508,9 @@ if uploaded_file:
         else:
             st.success(f"✅ File size: {file_size:.1f}MB")
         
-        # Process image
+        # Process image in thread
         with st.spinner("🔄 Processing image..."):
-            image_np, original_size, scale = process_uploaded_image(uploaded_file.getvalue())
+            image_np, original_size, scale = run_in_thread(process_uploaded_image, uploaded_file.getvalue())
         
         if image_np is None:
             st.error("❌ Failed to process image. Try a smaller file or different format.")
@@ -794,7 +813,6 @@ if uploaded_file:
             
             if process_analysis:
                 try:
-                    # Create mask
                     image_data = canvas_result.image_data
                     alpha_channel = image_data[:,:,3]
                     mask = (alpha_channel > 0).astype(np.uint8) * 255
@@ -807,10 +825,10 @@ if uploaded_file:
                     if display_scale != 1.0:
                         mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
                     
-                    # Analyze with original image
+                    # Analyze with original image in thread
                     with st.spinner("🔬 Analyzing mango..."):
-                        mango_area_mm2, lesion_area_mm2, lesion_percent, total_mask, lesion_mask = quick_color_analysis(
-                            original_image_np, mask, st.session_state.mm_per_px
+                        mango_area_mm2, lesion_area_mm2, lesion_percent, total_mask, lesion_mask = run_in_thread(
+                            quick_color_analysis, original_image_np, mask, st.session_state.mm_per_px
                         )
                     
                     if mango_area_mm2 > 0:
@@ -1038,20 +1056,14 @@ if uploaded_file:
                             if st.button("✅ Add Original Sample", key="add_original_btn", type="primary", use_container_width=True):
                                 if safe_add_sample(result):
                                     st.success(f"✅ Sample {len(st.session_state.samples)} added (original values)!")
-                                    # Clear corrected result when adding original
-                                    st.session_state.corrected_result = None
-                                    aggressive_cleanup()
-                                    # Avoid unnecessary rerun
+                                    # ...existing code...
                         
                         with button_col2:
                             if st.session_state.corrected_result is not None:
                                 if st.button("✅ Add Corrected Sample", key="add_corrected_btn", type="primary", use_container_width=True):
                                     if safe_add_sample(st.session_state.corrected_result):
                                         st.success(f"✅ Sample {len(st.session_state.samples)} added (corrected values)!")
-                                        # Clear corrected result after adding
-                                        st.session_state.corrected_result = None
-                                        aggressive_cleanup()
-                                        # Avoid unnecessary rerun
+                                    # ...existing code...
                             else:
                                 st.button("⚪ Add Corrected Sample", disabled=True, use_container_width=True, help="Apply corrections first by clicking 'Recalculate'")
                     else:
