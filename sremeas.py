@@ -997,9 +997,10 @@ if uploaded_file:
                                     # Yellow pen: remove from lesions, add to healthy
                                     corrected_lesion_mask[yellow_correction > 0] = 0
                                     corrected_total_mask[yellow_correction > 0] = 255
-                                    
-                                    # Black pen: add to lesions
+
+                                    # Black pen: add to lesions and also to total mango area
                                     corrected_lesion_mask[black_correction > 0] = 255
+                                    corrected_total_mask[black_correction > 0] = 255
                                     
                                     # Recalculate areas
                                     corrected_mango_area_px = np.count_nonzero(corrected_total_mask)
