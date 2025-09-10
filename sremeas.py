@@ -8,6 +8,11 @@ import gc
 from io import BytesIO
 import time
 import concurrent.futures
+try:
+    import rembg
+    REMBG_AVAILABLE = True
+except ImportError:
+    REMBG_AVAILABLE = False
 
 # Cloud-optimized page config
 st.set_page_config(
@@ -20,11 +25,14 @@ st.set_page_config(
 st.title("🥭 Mango Lesion Analyzer")
 
 # Streamlit Cloud optimized constants
-MAX_IMAGE_SIZE = 250  # Further reduced for cloud
+MAX_IMAGE_SIZE = 400  # Increased for better background removal quality
 CANVAS_SIZE = 600     # Smaller canvas for better performance  
 MAX_FILE_SIZE_MB = 4  # More conservative file size limit
 MEMORY_CLEANUP_INTERVAL = 30  # More frequent cleanup
 MAX_SAMPLES = 12      # Reduced sample limit
+
+# Background removal optimized settings
+BG_REMOVAL_MAX_SIZE = 600  # Higher quality for background removal
 
 # Streamlit Cloud optimized constants - less aggressive, more stable
 CANVAS_UPDATE_THROTTLE = 0.15   # Balanced throttle for transform mode (stability + speed)
@@ -50,7 +58,9 @@ session_defaults = {
     "consecutive_canvas_errors": 0,  # New: track consecutive errors
     "canvas_disabled": False,        # New: temporary canvas disable flag
     "last_error_type": None,         # New: track error patterns
-    "canvas_retry_count": 0          # New: track retry attempts
+    "canvas_retry_count": 0,         # New: track retry attempts
+    "bg_removed": False,             # New: track if background was removed
+    "original_image_backup": None    # New: backup of original image
 }
 
 for key, default in session_defaults.items():
@@ -267,6 +277,204 @@ def is_canvas_stable():
     return True
 
 @st.cache_data(max_entries=1, ttl=60, show_spinner=False)  # Reduced TTL for cloud
+def remove_background_rembg(image, preserve_bright_objects=True):
+    """
+    Remove background from image using REMBG with improved approach from appv3.py
+    More robust and preserves objects better
+    """
+    if not REMBG_AVAILABLE:
+        st.error("❌ REMBG not available. Install with: pip install rembg")
+        return None
+    
+    try:
+        # Convert numpy array to PIL if needed
+        if isinstance(image, np.ndarray):
+            image_pil = Image.fromarray(image)
+        else:
+            image_pil = image
+        
+        # Try background removal with fallback options (from appv3.py approach)
+        try:
+            # Convert to bytes for rembg
+            img_bytes = BytesIO()
+            image_pil.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            
+            # Remove background using rembg
+            no_bg_bytes = rembg.remove(img_bytes.getvalue())
+            no_bg_image = Image.open(BytesIO(no_bg_bytes)).convert('RGBA')
+            no_bg_array = np.array(no_bg_image)
+            
+            # Create mask from alpha channel - be more permissive (from appv3.py)
+            alpha_mask = no_bg_array[:, :, 3] > 50  # Lower threshold than before
+            
+            # If too much was removed, use a simpler approach (from appv3.py logic)
+            if np.sum(alpha_mask) < (alpha_mask.size * 0.1):  # If less than 10% remains
+                st.warning("Background removal was too aggressive. Using color-based segmentation instead.")
+                # Fallback: use color-based background detection
+                alpha_mask = create_simple_mask(np.array(image_pil))
+                no_bg_array = np.concatenate([np.array(image_pil), np.ones((*np.array(image_pil).shape[:2], 1), dtype=np.uint8) * 255], axis=2)
+        
+        except Exception as e:
+            st.warning(f"Background removal failed: {e}. Using color-based segmentation.")
+            # Fallback: use simple color-based mask
+            alpha_mask = create_simple_mask(np.array(image_pil))
+            no_bg_array = np.concatenate([np.array(image_pil), np.ones((*np.array(image_pil).shape[:2], 1), dtype=np.uint8) * 255], axis=2)
+        
+        # Filter colors to keep only mango-relevant colors (adapted from appv3.py)
+        filtered_image = filter_mango_colors(no_bg_array[:, :, :3], alpha_mask)
+        
+        return filtered_image
+    
+    except Exception as e:
+        st.error(f"❌ Background removal failed: {str(e)}")
+        return None
+
+def create_simple_mask(rgb_image):
+    """
+    Create a simple mask to separate foreground from background
+    Adapted from appv3.py for mango images
+    """
+    # Convert to HSV
+    hsv = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2HSV)
+    
+    # Create mask for likely background (very dark or very bright)
+    dark_mask = hsv[:, :, 2] < 30  # Very dark pixels
+    very_bright_mask = (hsv[:, :, 2] > 240) & (hsv[:, :, 1] < 30)  # Very bright, unsaturated
+    
+    # Background is likely dark or very bright unsaturated areas
+    background_mask = dark_mask | very_bright_mask
+    
+    # Foreground is everything else
+    foreground_mask = ~background_mask
+    
+    # Apply morphological operations to clean up the mask
+    kernel = np.ones((5, 5), np.uint8)
+    foreground_mask = cv2.morphologyEx(foreground_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
+    foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_OPEN, kernel)
+    
+    return foreground_mask.astype(bool)
+
+def filter_mango_colors(rgb_image, mask):
+    """
+    Filter image to keep only mango colors with internal structure preservation
+    Prevents removal of internal mango parts like seed cavities
+    """
+    # Convert to HSV for better color filtering
+    hsv = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2HSV)
+    
+    # More inclusive color ranges to capture all mango variations
+    color_ranges = {
+        'green_all': [(30, 20, 40), (90, 255, 255)],       # All green variations
+        'yellow_range': [(10, 20, 120), (40, 255, 255)],   # Yellow range (expanded)
+        'orange_range': [(5, 50, 100), (25, 255, 255)],    # Orange range for ripe mangoes
+        'brown_lesions': [(8, 70, 60), (25, 255, 170)],    # Brown lesions
+        'light_colors': [(0, 0, 80), (180, 50, 255)],      # Very light colors (scale bars)
+        'red_lesions': [(0, 60, 20), (10, 255, 120)],      # Red lesions
+        'warm_tones': [(0, 20, 50), (30, 255, 255)]        # Warm tones (red-yellow spectrum)
+    }
+    
+    # Create combined mask for all mango colors
+    combined_mask = np.zeros(hsv.shape[:2], dtype=bool)
+    
+    for color_name, (lower, upper) in color_ranges.items():
+        lower = np.array(lower)
+        upper = np.array(upper)
+        color_mask = cv2.inRange(hsv, lower, upper)
+        combined_mask |= (color_mask > 0)
+    
+    # Additional approach: keep pixels that are not too dark 
+    # (to catch edge cases and preserve mango flesh)
+    brightness_mask = hsv[:, :, 2] > 30  # Not too dark
+    low_saturation_mask = hsv[:, :, 1] < 200  # Not too saturated (catches whites/light areas)
+    additional_mask = brightness_mask & low_saturation_mask
+    
+    # Combine all masks
+    preliminary_mask = combined_mask | additional_mask
+    
+    # Combine with alpha mask (object presence) - be more permissive
+    object_mask = preliminary_mask & mask
+    
+    # === NEW: Internal structure preservation logic ===
+    # Fill holes inside detected mango regions to preserve internal parts
+    
+    # Step 1: Find connected components (individual mangoes)
+    num_labels, labels = cv2.connectedComponents(object_mask.astype(np.uint8))
+    
+    preserved_mask = np.zeros_like(object_mask)
+    
+    for label in range(1, num_labels):  # Skip background (label 0)
+        # Get current mango region
+        mango_region = (labels == label)
+        
+        if np.sum(mango_region) < 100:  # Skip very small regions
+            continue
+            
+        # Step 2: Fill holes within this mango region
+        # Create a filled version of this mango
+        filled_mango = cv2.morphologyEx(
+            mango_region.astype(np.uint8), 
+            cv2.MORPH_CLOSE, 
+            np.ones((15, 15), np.uint8)  # Large kernel to close gaps
+        )
+        
+        # Step 3: Use flood fill to ensure internal areas are preserved
+        # Find the convex hull to get the general mango shape
+        contours, _ = cv2.findContours(
+            mango_region.astype(np.uint8), 
+            cv2.RETR_EXTERNAL, 
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+        
+        if contours:
+            # Get the largest contour (main mango body)
+            largest_contour = max(contours, key=cv2.contourArea)
+            
+            # Create convex hull
+            hull = cv2.convexHull(largest_contour)
+            hull_mask = np.zeros_like(mango_region, dtype=np.uint8)
+            cv2.fillPoly(hull_mask, [hull], 1)
+            
+            # Step 4: Preserve everything inside the convex hull
+            # This ensures internal mango parts (seed cavities, lighter flesh) are kept
+            internal_preservation = hull_mask.astype(bool)
+            
+            # But only preserve internal areas that are not completely black/white
+            hsv_region = hsv[internal_preservation]
+            if len(hsv_region) > 0:
+                # Exclude only pure black (background) and pure white (overexposed)
+                not_pure_black = hsv_region[:, 2] > 10  # Not pure black
+                not_pure_white = ~((hsv_region[:, 1] < 10) & (hsv_region[:, 2] > 245))  # Not pure white
+                internal_valid = not_pure_black & not_pure_white
+                
+                # Create a mask for valid internal pixels
+                internal_coords = np.where(internal_preservation)
+                valid_internal_mask = np.zeros_like(internal_preservation)
+                if len(internal_coords[0]) == len(internal_valid):
+                    valid_coords = np.where(internal_valid)[0]
+                    if len(valid_coords) > 0:
+                        valid_internal_mask[internal_coords[0][valid_coords], 
+                                          internal_coords[1][valid_coords]] = True
+                
+                # Combine original detection with internal preservation
+                combined_mango = mango_region | valid_internal_mask
+            else:
+                combined_mango = mango_region
+            
+            # Add to final preserved mask
+            preserved_mask |= combined_mango
+    
+    # Apply morphological operations to smooth boundaries but preserve internal structure
+    kernel_small = np.ones((3, 3), np.uint8)
+    final_mask = cv2.morphologyEx(preserved_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel_small)
+    final_mask = final_mask.astype(bool)
+    
+    # Create output image with white background
+    result = np.full_like(rgb_image, 255)  # White background
+    result[final_mask] = rgb_image[final_mask]
+    
+    return result
+
 def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
     """Cloud-optimized image processing with enhanced error handling and basic enhancement"""
     if not uploaded_file or len(uploaded_file) == 0:
@@ -285,12 +493,25 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
             st.error("❌ Invalid image dimensions")
             return None, None, None
 
+        # Use higher quality if background removal is available
+        if REMBG_AVAILABLE:
+            max_dim = BG_REMOVAL_MAX_SIZE  # Use higher quality for better background removal
+            st.info("🎯 Using higher quality processing for background removal capability")
+
         total_pixels = original_size[0] * original_size[1]
-        if total_pixels > 600000:
-            st.warning("Large image detected. Optimizing for cloud.")
-            max_dim = min(max_dim, 200)
-        elif total_pixels > 400000:
-            max_dim = min(max_dim, 220)
+        # Less aggressive downscaling when REMBG is available
+        if REMBG_AVAILABLE:
+            if total_pixels > 1000000:  # Only downscale very large images
+                max_dim = min(max_dim, 500)
+            elif total_pixels > 600000:
+                max_dim = min(max_dim, 550)
+        else:
+            # Original aggressive scaling for non-REMBG users
+            if total_pixels > 600000:
+                st.warning("Large image detected. Optimizing for cloud.")
+                max_dim = min(max_dim, 200)
+            elif total_pixels > 400000:
+                max_dim = min(max_dim, 220)
 
         if image.mode != 'RGB':
             image = image.convert("RGB")
@@ -299,27 +520,16 @@ def process_uploaded_image(uploaded_file, max_dim=MAX_IMAGE_SIZE):
         if scale < 1.0:
             new_size = (int(image.width * scale), int(image.height * scale))
             image = image.resize(new_size, Image.Resampling.LANCZOS)
-            st.info(f"Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]}")
+            if REMBG_AVAILABLE:
+                st.info(f"Resized for background removal: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]}")
+            else:
+                st.info(f"Resized: {original_size[0]}x{original_size[1]} → {new_size[0]}x{new_size[1]}")
 
-        # --- Enhancement: Lower shadows and increase saturation ---
+        # Convert to numpy array without preprocessing for better AI background removal
         import cv2
         import numpy as np
 
         image_np = np.array(image, dtype=np.uint8)
-        img_hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
-
-        # Reduce shadows: brighten dark pixels in V channel
-        v = img_hsv[:,:,2]
-        shadow_mask = v < 80
-        v[shadow_mask] = np.clip(v[shadow_mask] + 40, 0, 255)
-        img_hsv[:,:,2] = v
-
-        # Increase saturation
-        s = img_hsv[:,:,1]
-        s = np.clip(s * 1.25, 0, 255)
-        img_hsv[:,:,1] = s.astype(np.uint8)
-
-        image_np = cv2.cvtColor(img_hsv, cv2.COLOR_HSV2RGB)
 
         del image
         gc.collect()
@@ -516,6 +726,16 @@ if uploaded_file:
             st.error("❌ Failed to process image. Try a smaller file or different format.")
             st.stop()
         
+        # Store backup of original image (for background removal)
+        if st.session_state.original_image_backup is None:
+            st.session_state.original_image_backup = image_np.copy()
+        
+        # Apply background removal if it was previously applied
+        if st.session_state.bg_removed and REMBG_AVAILABLE:
+            bg_removed = remove_background_rembg(st.session_state.original_image_backup, preserve_bright_objects=True)
+            if bg_removed is not None:
+                image_np = bg_removed
+        
         # Store original for analysis
         original_image_np = image_np.copy()
         h, w = image_np.shape[:2]
@@ -604,6 +824,59 @@ if uploaded_file:
         if scale_px and scale_length_mm > 0:
             st.session_state.mm_per_px = scale_length_mm / scale_px
             st.success(f"✅ Scale set: {st.session_state.mm_per_px:.4f} mm/pixel")
+            
+            # Background removal option (after scale is set)
+            if REMBG_AVAILABLE:
+                st.markdown("### 🎯 Image Preprocessing (Optional)")
+                with st.expander("🧹 AI Background Removal", expanded=False):
+                    st.info("💡 **Tip**: Remove background to focus analysis on mangoes only. Scale bar and text will be preserved.")
+                    
+                    # Store original image backup on first load
+                    if st.session_state.original_image_backup is None:
+                        st.session_state.original_image_backup = image_np.copy()
+                    
+                    # Show current status
+                    if st.session_state.bg_removed:
+                        st.success("✅ Background has been removed")
+                    else:
+                        st.info("📷 Using original image")
+                    
+                    col_bg1, col_bg2 = st.columns([1, 1])
+                    with col_bg1:
+                        if st.button("🧹 Remove Background", 
+                                   disabled=st.session_state.bg_removed,
+                                   help="Uses AI to remove background while preserving scale bars and text"):
+                            with st.spinner("🧹 Removing background with AI..."):
+                                bg_removed = remove_background_rembg(st.session_state.original_image_backup, preserve_bright_objects=True)
+                                if bg_removed is not None:
+                                    image_np = bg_removed
+                                    original_image_np = image_np.copy()  # Update original for analysis
+                                    st.session_state.bg_removed = True
+                                    st.success("✅ Background removed! Scale bar preserved.")
+                                    st.experimental_rerun()  # Refresh to show updated image
+                                else:
+                                    st.error("❌ Background removal failed")
+                    
+                    with col_bg2:
+                        if st.button("🔄 Reset to Original", 
+                                   disabled=not st.session_state.bg_removed,
+                                   help="Restore original image"):
+                            image_np = st.session_state.original_image_backup.copy()
+                            original_image_np = image_np.copy()
+                            st.session_state.bg_removed = False
+                            st.success("✅ Original image restored")
+                            st.experimental_rerun()
+                
+                # Show comparison outside of the expander (avoid nesting)
+                if st.session_state.bg_removed:
+                    with st.expander("👀 Before/After Comparison", expanded=False):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write("**Original**")
+                            st.image(st.session_state.original_image_backup, caption="Original image", use_column_width=True)
+                        with col2:
+                            st.write("**Background Removed**")
+                            st.image(image_np, caption="Background removed", use_column_width=True)
             
             # Step 2: Mango Analysis
             st.markdown("## 2️⃣ Analyze Mango")
@@ -1180,3 +1453,14 @@ with st.sidebar:
     if st.button("🧹 Clear Memory"):
         aggressive_cleanup()
         st.success("✅ Memory cleared")
+
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; padding: 20px; background-color: #f0f2f6; border-radius: 10px; margin-top: 30px;'>
+    <p style='margin: 0; color: #666; font-size: 14px;'>
+        <strong>🧬 Developed by the Plant Pathology Laboratory, Institute of Plant Breeding, UPLB</strong><br>
+        📧 For inquiries contact: <a href="mailto:jsmendoza5@up.edu.ph" style="color: #1f77b4; text-decoration: none;">jsmendoza5@up.edu.ph</a>
+    </p>
+</div>
+""", unsafe_allow_html=True)
