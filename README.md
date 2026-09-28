@@ -94,6 +94,16 @@ This application is optimized for Streamlit Cloud with:
 - Canvas error recovery
 - Throttled updates for stable performance
 
+## Resources
+
+📚 **Learning Materials & Data**
+- Access shared resources: [Google Drive Resources](https://drive.google.com/drive/folders/15NnfIcOXAoV7mg3cevWrUFra0-Kj5DH-)
+
+## Support & Contact
+
+📧 **For inquiries and technical support:**
+- Email: jsmendoza5@up.edu.ph
+
 ## Troubleshooting
 
 ### Common Issues

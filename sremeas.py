@@ -1180,3 +1180,8 @@ with st.sidebar:
     if st.button("🧹 Clear Memory"):
         aggressive_cleanup()
         st.success("✅ Memory cleared")
+    
+    st.markdown("---")
+    st.markdown("### 📚 Resources & Support")
+    st.markdown("[📁 Shared Resources](https://drive.google.com/drive/folders/15NnfIcOXAoV7mg3cevWrUFra0-Kj5DH-)")
+    st.markdown("📧 **Contact:** jsmendoza5@up.edu.ph")
